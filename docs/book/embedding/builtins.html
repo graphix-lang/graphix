@@ -293,8 +293,13 @@ impl&lt;R: Rt&gt; Apply&lt;R&gt; for Once {
 name. The function's type is declared in the <code>.gx</code> file where the
 builtin is bound — all arguments and the return type must be
 annotated. For example, <code>once</code> would be bound as:</p>
-<pre><code class="language-graphix">let once = |v: 'a| -&gt; 'a 'core_once
+<pre><code class="language-graphix fragment">let once = |v: 'a| -&gt; 'a 'core_once
 </code></pre>
+<p>A builtin is bound only in the source of a package: the signature
+written for it is trusted, so a program that binds one in its own text
+is refused, and calls it by the name its package gives it. An embedder
+that registers builtins without a package compiles its programs under
+<code>CFlag::BindBuiltins</code>.</p>
 <p>The <code>init</code> method is called when the built-in is instantiated at a
 call site. It receives the compile context, the concrete function
 type, the lexical scope, the argument nodes, and the top-level

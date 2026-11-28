@@ -85,6 +85,12 @@ pub enum CFlag {
     /// compiles under it, and its definitions carry it into every
     /// later compile of their bodies and defaults.
     NoBuiltins,
+    /// Admit a lambda that names a builtin outside a package's own
+    /// source, where it is otherwise refused: the signature written for
+    /// a builtin is trusted, so this is for a harness or an embedder
+    /// whose own programs bind the builtins it registered. `NoBuiltins`
+    /// still refuses.
+    BindBuiltins,
     /// Compiling a seq machine's steps: each is born again at every run,
     /// so a select's arms there act at every run, not only at a first
     /// entry, and its definition check does not warn of their constants.

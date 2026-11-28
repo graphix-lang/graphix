@@ -10,6 +10,7 @@ mod common;
 mod block_type_image;
 mod block_types;
 mod bound_callee_assertion;
+mod builtin_binding;
 mod cache_trust_report;
 mod check_leaves_assertions_to_the_build;
 mod check_numeric_singleton;

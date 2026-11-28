@@ -186,7 +186,7 @@ impl<R: Rt> BuiltIn<R> for PanicsAtBind {
 /// open: the next check starts from an empty resolution scratch.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_check_panicking_in_a_definition_leaves_none_open() -> Result<()> {
-    let (gx, _rx) = start(BitFlags::empty()).await?;
+    let (gx, _rx) = start(CFlag::BindBuiltins.into()).await?;
     gx.with_ctx(|ctx| ctx.register_builtin::<PanicsAtBind>()).await??;
     let src = "let boom = |x: i64| -> i64 'test_panics_at_bind;\n\
                let f = |x: i64| boom(x);\nf(1)\n";

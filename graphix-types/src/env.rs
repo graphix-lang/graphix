@@ -1,6 +1,6 @@
 use crate::{
     AddrSet, BindId, CFlag, SourcePosition,
-    expr::{At, Expr, ModPath, Origin, TypeDefBody},
+    expr::{At, Expr, ModPath, Origin, Source, TypeDefBody},
     ide::{
         FieldRefSite, Ide, IdeMode, Lowered, ModuleRefSite, ReferenceSite, ScopeMapEntry,
         SigImplLink, TypeRefSite, Warning, WarningRecord,
@@ -1608,6 +1608,21 @@ pub struct Env {
 }
 
 impl Env {
+    /// Whether `ori` is the source of a module a registered package
+    /// serves: no file, netidx path or program text is, whatever module
+    /// it is loaded as.
+    pub fn package_source(&self, ori: &Origin) -> bool {
+        match &ori.source {
+            Source::Vfs(module) => Path::parts(module)
+                .next()
+                .is_some_and(|root| self.package_roots.contains(root)),
+            Source::File(_)
+            | Source::Netidx(_)
+            | Source::Program
+            | Source::Unspecified => false,
+        }
+    }
+
     /// A copy for a compile task: the global registries record what the
     /// task writes, for [`Self::join`]; the lexical maps are the task's
     /// own, as `with_restored` leaves them.

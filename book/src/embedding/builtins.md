@@ -141,9 +141,15 @@ name. The function's type is declared in the `.gx` file where the
 builtin is bound — all arguments and the return type must be
 annotated. For example, `once` would be bound as:
 
-```graphix
+```graphix,fragment
 let once = |v: 'a| -> 'a 'core_once
 ```
+
+A builtin is bound only in the source of a package: the signature
+written for it is trusted, so a program that binds one in its own text
+is refused, and calls it by the name its package gives it. An embedder
+that registers builtins without a package compiles its programs under
+`CFlag::BindBuiltins`.
 
 The `init` method is called when the built-in is instantiated at a
 call site. It receives the compile context, the concrete function

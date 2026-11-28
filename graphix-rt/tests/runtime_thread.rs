@@ -5,8 +5,8 @@
 use anyhow::{Context, Result};
 use arcstr::literal;
 use graphix_compiler::{
-    Apply, BuiltIn, CompileCtx, Effect, ExecCtx, Node, Rt, Scope, TagValue, expr::ExprId,
-    image::ImageBuf, typ::FnType,
+    Apply, BuiltIn, CFlag, CompileCtx, Effect, ExecCtx, Node, Rt, Scope, TagValue,
+    expr::ExprId, image::ImageBuf, typ::FnType,
 };
 use graphix_rt::{GXConfig, GXEvent, GXExt, GXHandle, GXRt};
 use netidx_core::pack::PackError;
@@ -122,7 +122,8 @@ async fn start() -> Result<(GXHandle<Probe>, smpsc::Receiver<()>)> {
     ctx.rt.ext.dropped = Some(dropped);
     let (tx, mut rx) = mpsc::channel::<GPooled<Vec<GXEvent>>>(100);
     tokio::spawn(async move { while rx.recv().await.is_some() {} });
-    let gx = GXConfig::builder(ctx, tx).build()?.start().await?;
+    let flags = CFlag::BindBuiltins.into();
+    let gx = GXConfig::builder(ctx, tx).flags(flags).build()?.start().await?;
     // the loop is back at its wait, its timer armed, once this is answered
     gx.get_env().await?;
     Ok((gx, gone))

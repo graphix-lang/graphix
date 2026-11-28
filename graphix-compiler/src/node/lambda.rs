@@ -2709,8 +2709,34 @@ impl Lambda {
             // `run!` audit every builtin value against its site's resolved return type.
             // probe: design/review-2026-11-16/repro/a-stdlib-builtin-sig-trusted.gx
             // (a-stdlib-01)
+            // 2026-11-27 claude: Eric ruled (2026-11-28): "I agree with refusing the
+            // label outside the package. I'm not so sure about dynamic argument and
+            // return type checking."
+            // 2026-11-27 claude: The refusal is built: a `'name` body is admitted only
+            // in the source of a registered package (`Env::package_source`: a module a
+            // package serves), under `CFlag::BindBuiltins` (harnesses and embedders
+            // that bind what they registered; `testing::Mode::flags` and three runtime
+            // tests set it), or in the editor. Any package's source may bind any
+            // builtin, since `array` binds `core_array_len`. The probe is refused by
+            // the check and by a run: "builtin function str_trim can be bound only in
+            // the source of a package". Pin: graphix-shell
+            // tests/shell/builtin_binding.rs. Not built, and Eric's to decide: the
+            // kernel's check of a scalar fast call's returned kind, and the audit of
+            // builtin values in `run!`. What is left of the hole is a package author's
+            // own wrong signature.
             if flags.contains(CFlag::NoBuiltins) {
                 bail!("defining builtins is not allowed in this context")
+            }
+            // a builtin's signature is trusted: fused code reads its
+            // result as the type written here
+            if !(flags.contains(CFlag::BindBuiltins)
+                || ctx.env.ide.is_lsp()
+                || ctx.env.package_source(&spec.ori))
+            {
+                bail!(
+                    "builtin function {builtin} can be bound only in the source of a \
+                     package: a program calls it by the name its package gives it"
+                )
             }
             // CR claude for eric: [structure/medium] A builtin's signature is written
             // twice by rule: the binding lambda must annotate every argument and the

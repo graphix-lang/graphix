@@ -266,10 +266,14 @@ pub enum Mode {
 impl Mode {
     pub const ALL: [Mode; 4] = [Mode::Interp, Mode::Jit, Mode::Par, Mode::JitPar];
 
+    /// The mode's compile flags. A fixture binds builtins in its own
+    /// text (a test's own, a stdlib one under another signature), so
+    /// every mode admits that.
     pub fn flags(self) -> BitFlags<CFlag> {
+        let bind = BitFlags::from(CFlag::BindBuiltins);
         match self {
-            Mode::Interp | Mode::Par | Mode::Unpruned => CFlag::FusionDisabled.into(),
-            Mode::Jit | Mode::JitPar => BitFlags::empty(),
+            Mode::Interp | Mode::Par | Mode::Unpruned => bind | CFlag::FusionDisabled,
+            Mode::Jit | Mode::JitPar => bind,
         }
     }
 

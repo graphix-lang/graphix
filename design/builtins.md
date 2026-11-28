@@ -13,7 +13,16 @@ Add the http requests to the Concurrent list. Found by reading; not run. (x-asyn
 **Builtins** implement `BuiltIn<R>` (`NAME`, `init()`, `EFFECT`) and
 register with `ExecCtx::register_builtin::<T>()`; the Graphix signature
 lives in the package's `.gx` with every argument and the return type
-annotated. `EFFECT` is the one classification (`effects.rs`):
+annotated. **That signature is trusted** (fused code reads a builtin's
+result as the type written for it), so a `'name` body is admitted only in
+the source of a registered package (`Env::package_source`: a module a
+package serves, never a file, a netidx path or program text), under
+`CFlag::BindBuiltins` (a harness or an embedder whose own programs bind
+the builtins it registered; `testing::Mode::flags` sets it), or in the
+editor, which checks a package under development and runs nothing. A
+dynamic module's body is refused it whatever the flags
+(`CFlag::NoBuiltins`). Pin: `graphix-shell/tests/shell/builtin_binding.rs`.
+`EFFECT` is the one classification (`effects.rs`):
 `Async` (may produce later, autonomously, or never), `Sync` (same cycle
 but keeps cross-invocation state, or depends on WHICH args arrived),
 `Stateless(Option<FastCall>)` (a pure function of its args, never an

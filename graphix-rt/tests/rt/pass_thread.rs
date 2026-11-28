@@ -5,8 +5,8 @@
 use anyhow::{Context, Result};
 use arcstr::literal;
 use graphix_compiler::{
-    Apply, BuiltIn, CompileCtx, Effect, ExecCtx, Node, ParMode, Rt, Scope, TagValue,
-    expr::ExprId, image::ImageBuf, typ::FnType,
+    Apply, BuiltIn, CFlag, CompileCtx, Effect, ExecCtx, Node, ParMode, Rt, Scope,
+    TagValue, expr::ExprId, image::ImageBuf, typ::FnType,
 };
 use graphix_rt::{GXConfig, GXEvent, GXRt, NoExt};
 use netidx_core::pack::PackError;
@@ -68,7 +68,8 @@ async fn every_pass_runs_on_one_thread() -> Result<()> {
     let ctx = GXRt::<NoExt>::new_state()?;
     ctx.control.set_par_mode(ParMode::Off);
     let (tx, mut rx) = mpsc::channel::<GPooled<Vec<GXEvent>>>(100);
-    let gx = GXConfig::builder(ctx, tx).build()?.start().await?;
+    let flags = CFlag::BindBuiltins.into();
+    let gx = GXConfig::builder(ctx, tx).flags(flags).build()?.start().await?;
     gx.with_ctx(|ctx| ctx.register_builtin::<PassThread>()).await??;
     let c = gx
         .compile(literal!(

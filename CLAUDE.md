@@ -245,7 +245,10 @@ an inferred type finite. Format type variables with
 **Builtins** (`design/builtins.md`) implement `BuiltIn<R>` (`NAME`,
 `init()`, `EFFECT`) and register with `ExecCtx::register_builtin::<T>()`;
 the signature lives in the package's `.gx` with every argument and the
-return type annotated. `EFFECT` is the one classification (`effects.rs`):
+return type annotated, and is trusted, so a `'name` body is admitted only
+in a package's own source or under `CFlag::BindBuiltins` (`run!` sets it;
+a test with a config of its own sets it too). `EFFECT` is the one
+classification (`effects.rs`):
 `Async`, `Sync`, `Stateless(Option<FastCall>)` or `Io(Option<IoCall>)`. A
 wrong `Stateless` is a semantics bug. Bottom never reaches builtin authors.
 Raw `Apply` authors read args through `seam_arg`/`seam_tick`/`seam_value`.
