@@ -24,6 +24,12 @@ of `args.json`. The tool takes a script only from the session's own script
 directory, so copy it there or pass it inline. A run that dies part way is
 resumed with the same script and args: only the missing reviewers run again.
 
+A round includes the four design reviewers (`a-language`, `a-compiler`,
+`a-stdlib`, `a-packages` in `dims.py`), each writing a design assessment
+for `design/REVIEW-<date>.md`. After the round their numbered findings are
+gone through with Eric one at a time, each ruled and built before the next,
+the rulings recorded in `~/ptmp/cr-discuss.md`.
+
 Before a round, edit:
 
 - `units.py`: every tracked source file belongs to one unit. Split a unit
