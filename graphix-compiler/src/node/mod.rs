@@ -258,15 +258,20 @@ fn audit_standing<R: Rt>(
 }
 
 /// An entry delivered this cycle as a reader sees it: its own tag. What a
-/// wake stood moved ([`Tag::moved`]) is a fire to no reader; a step, born
-/// into a standing world, computes everything anew and reads it plain
-/// stale.
+/// wake stood moved ([`Tag::moved`]) is a fire to no reader and a value
+/// that stands, so it reads as [`standing_view`] says: fresh at a birth,
+/// and plain stale to a step, which computes everything anew.
 #[inline(always)]
 pub(crate) fn delivered_view(event: &Event, tv: &TagValue) -> TagValue {
     let tag = tv.tag();
     let mut tv = tv.clone();
-    if tag.moved() && event.view == View::Step {
-        tv.retag(tag.quiet());
+    if tag.moved() {
+        let tag = match event.view {
+            View::Birth => tag.fresh(),
+            View::Step => tag.quiet(),
+            View::Cycle | View::Wake => tag,
+        };
+        tv.retag(tag);
     }
     tv
 }

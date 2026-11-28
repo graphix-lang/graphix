@@ -110,6 +110,21 @@ run!(
     prints("[i64:0, i64:1, i64:0, i64:1, i64:0, i64:1]")
 );
 
+// A capture that stood again in the cycle of a start stands as any other:
+// the even arm resumes at step 2, where the block first starts, and the
+// start fires what is read through it. Three starts, three values.
+run!(
+    a_capture_a_resume_stood_again_fires_at_the_start,
+    clocked!(
+        "let lvl = 3; \
+         let r = select step % 2 { 0 => { let a = lvl + 1; &a }, _ => { let a = 100; &a } }; \
+         let p = once(r); let c = (*p) + 0; \
+         let v = fresh k { uniq(c) }; let n = count(v); \
+         select step { 8 => step ~ n, _ => never() }"
+    ),
+    prints("i64:3")
+);
+
 // A later start takes the kernels the first one built, and a map crosses
 // into a kernel unread, its type kept as written.
 run!(

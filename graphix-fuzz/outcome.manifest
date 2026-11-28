@@ -195,6 +195,7 @@ trace	fresh-block-nov2026/04_an_arm_starts_over_at_each_visit.gx
 trace	fresh-block-nov2026/05_on_inside_and_a_capture_that_stands.gx
 trace	fresh-block-nov2026/06_nested_in_on_and_in_fresh.gx
 trace	fresh-start-nov2026/01_a_later_start_takes_the_first_ones_kernels.gx
+trace	fresh-start-nov2026/02_a_capture_stood_again_fires_at_the_start.gx
 reject	N: iN must be Function here: it is no function	function-bound-oct2026/00_queuefn_non_function.gx
 reject	N: fn(?#d: iN, x: iN) -> iN must be Function here: it has a defaulted label, and a function passed here is called with every argument and no other; wrap it in a lambda that calls it	function-bound-oct2026/01_queuefn_defaulted_label.gx
 trace	function-scheme-arg-oct2026/00_seq_trigger_builtin.gx

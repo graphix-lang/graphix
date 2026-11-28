@@ -1,0 +1,10 @@
+// What a fresh block reads fires at each start with the value that stands
+// (design/fresh_blocks.md), and a value a resume stood again in the start's own
+// cycle stands as any other (design/sleep_and_wake.md, the moved mark). `once` holds
+// the reference arm 0 made; at in0 = 0 that arm resumes and its `v5` is stood again,
+// moved, in the cycle the block starts. The node-walk read the moved entry as no
+// event, so `uniq(v3)` never fired in the new block and `v8` went quiet; the JIT's
+// run, where nothing was moved, printed it.
+// Expected (both engines): `v8 3` at every cycle.
+// schedule-v1: cap=96 events=768; in0=i64:1; in0=i64:0; in0=i64:3; in0=i64:2
+{ let v0 = 0; let v1 = select (in0 % 2) { 0 => { let v5 = array::len(array::map([v0, 7], |e| 1)); &v5 }, _ => { let v5 = v0 + 100; &v5 } }; let v2 = once(v1); let v3 = (*v2) + 0; let v4 = count(v3); let v8 = fresh in0 { uniq(v3) + count(in0) }; println("v4 [v4]"); println("v8 [v8]"); v4 }
