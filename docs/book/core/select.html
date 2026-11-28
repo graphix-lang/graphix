@@ -362,6 +362,18 @@ select p { whole@ { left, .. } =&gt; left + whole.right }
 </code></pre>
 <p>Over a union, <code>v</code> is the member the arm matched; in an or-pattern, where every
 alternative captures the same name, it is the union of what they match.</p>
+<p>A capture stands over a literal too. The name is the literal's value, of
+the literal's type, and it fires each time the arm takes a value, which
+makes it the event a literal arm acts on:</p>
+<pre><code class="language-graphix">let n = array::iter([1, 2, 3, 2]);
+let twos = 0;
+select n {
+  t@ 2 =&gt; twos &lt;- t ~ twos + 1,
+  _ =&gt; never()
+}
+</code></pre>
+<p>Over <code>_</code> or a bare name a capture would only be a second name, so it is
+refused: write the name alone.</p>
 <h3 id="slice-patterns"><a class="header" href="#slice-patterns">Slice Patterns</a></h3>
 <p>Suppose we want to classify arrays that have at least two elements vs arrays
 that don't, and we want to return a variant with a triple of the first two

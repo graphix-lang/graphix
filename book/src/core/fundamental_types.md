@@ -49,7 +49,8 @@ error: in expr
 
 Caused by:
     0: at: line: 1, column: 1, in: 1.0 + 1
-    1: cannot compute f64 + i64: arithmetic is fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must be one numeric type (cast one side explicitly)
+    1: cannot compute with +: arithmetic is fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must be one numeric type: cast one operand to the other's type (`cast<f64>(x)$ + y`)
+    2: type mismatch f64 does not contain i64
 〉1. + cast<f64>(1)$
 -: f64
 2.0

@@ -2,7 +2,7 @@ use super::{CFlag, WakeBit, compiler::compile, coretraits, dense_gate};
 use crate::{
     CompileCtx, ExecCtx, Node, NodeView, Rt, Scope, TagValue, Update, defetyp,
     env::Env,
-    expr::{Expr, ExprId, Told},
+    expr::{Expr, ExprId, Told, union_members},
     fusion::{
         self,
         emit::{
@@ -24,6 +24,7 @@ use compact_str::format_compact;
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
 use netidx_value::{Typ, Value};
+use smallvec::SmallVec;
 use triomphe::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -327,7 +328,7 @@ macro_rules! compare_op {
     };
 }
 
-// CR claude for eric: [structure/medium] `x == null` over `x: [i64, null]` and a
+// XCR claude for eric: [structure/medium] `x == null` over `x: [i64, null]` and a
 // variant union compared with one of its tags are refused ("both operands must be one
 // type") though the right operand is a member of the left one's type, so the commonest
 // comparison in ordinary code needs `opt::is_none` or a select, and the message names
@@ -338,6 +339,12 @@ macro_rules! compare_op {
 // other's plus null or an error. probe:
 // design/review-2026-11-16/repro/a-language-check-refusals.sh (cases 6 to 8)
 // (a-language-09)
+// 2026-11-27 claude: Both halves are built. The check by bounds admits a comparison
+// where one operand's type holds the other's (`x == null`, `x == 3` over `[i64, null]`,
+// a variant union against one of its tags; CLAUDE.md, Operators), so no `opt::is_none`
+// or select is needed there. The arithmetic refusal now names the fix
+// (x-diagnostics-02): `x + 1` over a nullable or a Result says `$` takes the null or
+// the error off an operand. Regression: the skill SKILL.md cases.
 compare_op!(Eq, ==, false);
 compare_op!(Ne, !=, false);
 compare_op!(Lt, <, true);
@@ -738,6 +745,43 @@ macro_rules! arith_emit_clif {
     };
 }
 
+/// What makes arithmetic over operands of `lt` and `rt` pass, read off
+/// the two: `$` where one holds a null or an error beside its number, a
+/// cast where they are two numeric types, interpolation where one is a
+/// string; nothing where none of these is it.
+fn arith_advice(env: &Env, lt: &Type, rt: &Type) -> &'static str {
+    // the numeric types an operand holds, whether a `$` takes anything
+    // off it, and whether it holds a string
+    let held = |t: &Type| {
+        let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+        let (mut numbers, mut strips, mut string) = (BitFlags::empty(), false, false);
+        if union_members(env, &bounds::standing_whole(t), &mut members).is_ok() {
+            for m in members.iter() {
+                match m {
+                    Type::Primitive(p) => {
+                        numbers |= *p & Typ::number();
+                        strips |= p.intersects(Typ::Null | Typ::Error);
+                        string |= p.contains(Typ::String);
+                    }
+                    Type::Error(_) => strips = true,
+                    _ => (),
+                }
+            }
+        }
+        (numbers, strips, string)
+    };
+    let ((ln, ls, lstr), (rn, rs, rstr)) = (held(lt), held(rt));
+    if (ls && !ln.is_empty()) || (rs && !rn.is_empty()) {
+        ": `$` takes the null or the error off an operand (`x$ + 1`), `?` raises it"
+    } else if ln.exactly_one().is_some() && rn.exactly_one().is_some() && ln != rn {
+        ": cast one operand to the other's type (`cast<f64>(x)$ + y`)"
+    } else if lstr || rstr {
+        ": to join strings, interpolate (\"[a][b]\")"
+    } else {
+        ""
+    }
+}
+
 /// `fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a`: both operands
 /// `lt` and `rt` and the result `out` are one numeric type. Idempotent.
 pub(crate) fn arith_rule(
@@ -748,7 +792,7 @@ pub(crate) fn arith_rule(
     out: &Type,
 ) -> Result<()> {
     let checked = op.is_checked();
-    // CR claude for claude: [readability/medium] "(cast one side explicitly)"
+    // XCR claude for claude: [readability/medium] "(cast one side explicitly)"
     // never works as written: cast returns a Result, so `cast<i64>(x) + 1` over
     // a nullable x and `cast<f64>(x) + y` for i64 + f64 are refused again with
     // the same advice. The common case, a nullable or a Result operand (`x + 1`
@@ -764,11 +808,18 @@ pub(crate) fn arith_rule(
     // now 'cannot compute with +: arithmetic is fn<'a: Number + Singleton>...'
     // over the solver's leaf, which gives no advice at all. The fix proposed
     // (advice chosen from the operands) applies to that message.
+    // 2026-11-27 claude: Built as proposed (`arith_advice`): `$` where an
+    // operand holds a null or an error beside its number, a cast where the
+    // operands are two numeric types, interpolation where one is a string,
+    // nothing otherwise. Regression: the skill SKILL.md cases ("`$` takes the
+    // null or the error off an operand", "cast one operand to the other's
+    // type", "to join strings, interpolate").
     let told = |e| {
         let told = format_compact!(
             "cannot compute with {}: arithmetic is fn<'a: Number + Singleton>(x: \
-             'a, y: 'a) -> 'a — both operands must be one numeric type",
-            op.token()
+             'a, y: 'a) -> 'a — both operands must be one numeric type{}",
+            op.token(),
+            arith_advice(env, lt, rt)
         );
         Told::over(e, &told)
     };

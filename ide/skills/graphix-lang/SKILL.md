@@ -428,11 +428,14 @@ ok let f = 'a: Number + Singleton |a: 'a, b: 'a| a + b; f(1, 2)
 no "write 'a: Number + Singleton" let f = 'a: Number |a: 'a, b: 'a| a + b; f(1, 2)
 no "write 'a: Number + Singleton" let f = |a: 'a, b: 'a| a + b; f(1, 2)
 ok let f = |a, b| a + b; (f(1, 2), f(1.5, 2.5))
-no "cannot compute" let x: [i64, null] = 3; x + 1
+no "`$` takes the null or the error off an operand" let x: [i64, null] = 3; x + 1
 ok let x: [i64, null] = 3; x$ + 1
-no "it has no error and no null" let x = 1; x$
-no "cannot compute" let a = [1, 2]; a[1] + 1
+no "`$` takes the null or the error off an operand" let a = [1, 2]; a[1] + 1
 ok let a = [1, 2]; a[1]$ + 1
+no "cast one operand to the other's type" i64:1 + f64:2.0
+ok cast<f64>(i64:1)$ + f64:2.0
+no "to join strings, interpolate" let s = "a"; s + 1
+no "it has no error and no null" let x = 1; x$
 no "Number does not contain datetime" let d = datetime:"2020-01-01T00:00:00Z"; d - d
 ok let d = datetime:"2020-01-01T00:00:00Z"; sys::time::diff(d, d)
 no "not known here" let f = |r| r?; f(1)

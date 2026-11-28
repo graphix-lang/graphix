@@ -247,12 +247,18 @@ type Direction = [
     `Descending
 ];
 
-// CR claude for claude: [structure/low] `sort` takes no key and this package has no
+// XCR claude for claude: [structure/low] `sort` takes no key and this package has no
 // `reverse` (list has one), so a table sorted by a column is map to `(key, row)` pairs,
 // sort, map back, once per column, and the row type must itself be `Ordered` because
 // the pairs are what is sorted. Add `sort_by(a, f)` with a key callback (stable,
 // comparing keys alone) and `reverse`: both are what a table or a list view reaches for
 // first. probe: design/review-2026-11-16/repro/a-language-table-sort.gx (a-language-10)
+// 2026-11-27 claude: Built: `array::reverse` and `array::sort_by(#dir, #numeric, a,
+// f)`, stable, comparing the keys alone (the rows need no order), over the one sort
+// `sort` runs (`graphix_package_core::sort_by_key`). Regression: lib_tests::array
+// `array_reverse`, `array_sort_by_compares_keys_alone_and_is_stable`,
+// `array_sort_by_follows_its_key`, `array_sort_by_key_is_ordered`, and the skill
+// stdlib.md cases.
 // CR claude for eric: [structure/medium] The packages miss what a first program reaches
 // for: of 128 names I guessed, 3 exist. `array` has no `reverse`, `contains`,
 // `is_empty` or sort by a key (`list` has the first three; sorting rows by a column is
@@ -264,10 +270,21 @@ type Direction = [
 // over one array returns the array. Add the missing functions with one signature shape
 // across `array`, `list` and `map`, and delete or retype the three `Number` functions.
 // probe: design/review-2026-11-16/repro/a-stdlib-name-census.sh (a-stdlib-09)
+// 2026-11-27 claude: Partly built (2026-11-27, Eric: "we don't have array::reverse,
+// really?"): `array::reverse` and `array::sort_by` exist now (a-language-10). The rest
+// stands and is Eric's to rule on: `array::contains`/`is_empty`,
+// `map::keys`/`values`/pairs, `math` over integers, environment variables, datetime
+// formatting and parts, `re::replace`, and the three `Number` functions.
 /// return a new copy of a sorted ascending (by default). If numeric is true then
 /// values will be cast to numbers before comparison, resulting in a numeric sort
 /// even if the values are strings.
 val sort: fn&lt;'a: Ordered&gt;(?#dir: Direction, ?#numeric: bool, a: Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
+
+/// return a new copy of a sorted ascending (by default) by the key f gives
+/// each element. Only the keys are compared, as sort compares elements,
+/// so the elements themselves need no order, and elements with equal keys
+/// keep the order they had in a.
+val sort_by: fn&lt;'k: Ordered&gt;(?#dir: Direction, ?#numeric: bool, a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; 'k throws 'e) -&gt; Array&lt;'a&gt; throws 'e;
 
 /// return an array of pairs where the first element is the index in
 /// the array and the second element is the value.
@@ -295,6 +312,9 @@ val unzip: fn(a: Array&lt;('a, 'b)&gt;) -&gt; (Array&lt;'a&gt;, Array&lt;'b&gt;)
 /// of a, so rotating by the length (or rotating an empty array) is
 /// the identity. n defaults to 1.
 val rotate: fn(?#n: i64, a: Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
+
+/// Return a new array with the elements of a in reverse order.
+val reverse: fn(a: Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
 </code></pre>
 
                     </main>

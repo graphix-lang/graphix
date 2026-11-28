@@ -748,7 +748,8 @@ error: in expr
 
 Caused by:
     0: at: line: 1, column: 1, in: 1.0 + 1
-    1: cannot compute f64 + i64: arithmetic is fn&lt;'a: Number + Singleton&gt;(x: 'a, y: 'a) -&gt; 'a — both operands must be one numeric type (cast one side explicitly)
+    1: cannot compute with +: arithmetic is fn&lt;'a: Number + Singleton&gt;(x: 'a, y: 'a) -&gt; 'a — both operands must be one numeric type: cast one operand to the other's type (`cast&lt;f64&gt;(x)$ + y`)
+    2: type mismatch f64 does not contain i64
 〉1. + cast&lt;f64&gt;(1)$
 -: f64
 2.0
@@ -2118,6 +2119,18 @@ select p { whole@ { left, .. } =&gt; left + whole.right }
 </code></pre>
 <p>Over a union, <code>v</code> is the member the arm matched; in an or-pattern, where every
 alternative captures the same name, it is the union of what they match.</p>
+<p>A capture stands over a literal too. The name is the literal's value, of
+the literal's type, and it fires each time the arm takes a value, which
+makes it the event a literal arm acts on:</p>
+<pre><code class="language-graphix">let n = array::iter([1, 2, 3, 2]);
+let twos = 0;
+select n {
+  t@ 2 =&gt; twos &lt;- t ~ twos + 1,
+  _ =&gt; never()
+}
+</code></pre>
+<p>Over <code>_</code> or a bare name a capture would only be a second name, so it is
+refused: write the name alone.</p>
 <h3 id="slice-patterns"><a class="header" href="#slice-patterns">Slice Patterns</a></h3>
 <p>Suppose we want to classify arrays that have at least two elements vs arrays
 that don't, and we want to return a variant with a triple of the first two
@@ -7555,12 +7568,18 @@ type Direction = [
     `Descending
 ];
 
-// CR claude for claude: [structure/low] `sort` takes no key and this package has no
+// XCR claude for claude: [structure/low] `sort` takes no key and this package has no
 // `reverse` (list has one), so a table sorted by a column is map to `(key, row)` pairs,
 // sort, map back, once per column, and the row type must itself be `Ordered` because
 // the pairs are what is sorted. Add `sort_by(a, f)` with a key callback (stable,
 // comparing keys alone) and `reverse`: both are what a table or a list view reaches for
 // first. probe: design/review-2026-11-16/repro/a-language-table-sort.gx (a-language-10)
+// 2026-11-27 claude: Built: `array::reverse` and `array::sort_by(#dir, #numeric, a,
+// f)`, stable, comparing the keys alone (the rows need no order), over the one sort
+// `sort` runs (`graphix_package_core::sort_by_key`). Regression: lib_tests::array
+// `array_reverse`, `array_sort_by_compares_keys_alone_and_is_stable`,
+// `array_sort_by_follows_its_key`, `array_sort_by_key_is_ordered`, and the skill
+// stdlib.md cases.
 // CR claude for eric: [structure/medium] The packages miss what a first program reaches
 // for: of 128 names I guessed, 3 exist. `array` has no `reverse`, `contains`,
 // `is_empty` or sort by a key (`list` has the first three; sorting rows by a column is
@@ -7572,10 +7591,21 @@ type Direction = [
 // over one array returns the array. Add the missing functions with one signature shape
 // across `array`, `list` and `map`, and delete or retype the three `Number` functions.
 // probe: design/review-2026-11-16/repro/a-stdlib-name-census.sh (a-stdlib-09)
+// 2026-11-27 claude: Partly built (2026-11-27, Eric: "we don't have array::reverse,
+// really?"): `array::reverse` and `array::sort_by` exist now (a-language-10). The rest
+// stands and is Eric's to rule on: `array::contains`/`is_empty`,
+// `map::keys`/`values`/pairs, `math` over integers, environment variables, datetime
+// formatting and parts, `re::replace`, and the three `Number` functions.
 /// return a new copy of a sorted ascending (by default). If numeric is true then
 /// values will be cast to numbers before comparison, resulting in a numeric sort
 /// even if the values are strings.
 val sort: fn&lt;'a: Ordered&gt;(?#dir: Direction, ?#numeric: bool, a: Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
+
+/// return a new copy of a sorted ascending (by default) by the key f gives
+/// each element. Only the keys are compared, as sort compares elements,
+/// so the elements themselves need no order, and elements with equal keys
+/// keep the order they had in a.
+val sort_by: fn&lt;'k: Ordered&gt;(?#dir: Direction, ?#numeric: bool, a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; 'k throws 'e) -&gt; Array&lt;'a&gt; throws 'e;
 
 /// return an array of pairs where the first element is the index in
 /// the array and the second element is the value.
@@ -7603,6 +7633,9 @@ val unzip: fn(a: Array&lt;('a, 'b)&gt;) -&gt; (Array&lt;'a&gt;, Array&lt;'b&gt;)
 /// of a, so rotating by the length (or rotating an empty array) is
 /// the identity. n defaults to 1.
 val rotate: fn(?#n: i64, a: Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
+
+/// Return a new array with the elements of a in reverse order.
+val reverse: fn(a: Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="map-1"><a class="header" href="#map-1">Map</a></h1>
 <pre><code class="language-graphix">// CR claude for eric: [structure/medium] A collection callback's state belongs to its
