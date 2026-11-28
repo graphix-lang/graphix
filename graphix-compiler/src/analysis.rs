@@ -904,6 +904,14 @@ pub(crate) fn def_body_facts<R: Rt>(
     (facts, calls)
 }
 
+/// Each call a body makes, nested lambda bodies excluded.
+pub(crate) fn for_each_call<R: Rt>(g: &GXLambda<R>, f: &mut dyn FnMut(&CallSite<R>)) {
+    walk_body(g, &mut |cs| {
+        f(cs);
+        LambdaFacts::PURE
+    });
+}
+
 /// One body's facts, nested lambda bodies excluded, a call's from
 /// `call`. A `<-` counts as state only when its target is one of the
 /// body's own bindings.

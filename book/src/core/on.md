@@ -19,9 +19,9 @@ sel + 1` reads and writes `sel`, so it feeds itself and counts as fast
 as it can, and `menu_sel <- 0` is a constant, which acts once and never
 again.
 
-The check warns of a function that writes and reads none of its
-parameters, and a program that spins this way logs it once, but neither
-catches a single missing sample among several.
+The check warns of a function that writes or performs an effect and
+reads none of its parameters, and a program that spins this way logs it
+once, but neither catches a single missing sample among several.
 
 An `on` block states the clock once for everything in it:
 

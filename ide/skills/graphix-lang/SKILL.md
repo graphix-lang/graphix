@@ -106,9 +106,10 @@ event that says the work is done (`sys::exit(written ~ 0)`).
   not depend on the call: `|c| n <- n + 1` reads and writes `n`, so it
   is the self-loop below, counting at 100% CPU from the moment the widget
   is built, with no click at all. The check warns of a function that
-  writes and reads none of its parameters (`|_|` silences it), and a
-  program that spins logs once, naming the variable, after about a
-  million cycles that only writes started.
+  writes or performs an effect (`|c| println("x")`, `|c| save(doc)`)
+  and reads none of its parameters (`|_|` silences it), and a program
+  that spins logs once, naming the variable, after about a million
+  cycles that only writes started.
 - **An arm that connects to a binding it also reads unsampled is a
   self-loop**: `` `Enter => known <- upsert(known, x) `` re-fires itself
   every cycle (the accidental counter, 100% CPU). Write

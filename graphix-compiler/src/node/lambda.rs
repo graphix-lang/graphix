@@ -3346,6 +3346,9 @@ impl<R: Rt> Update<R> for Lambda {
             {
                 let (facts, calls) = crate::analysis::def_body_facts(g, ctx);
                 def.join_facts(facts);
+                if let DefOrigin::Source { flags, .. } = &def.origin {
+                    super::select::warn_undriven_effect(ctx, *flags, spec, g)?
+                }
                 let captured = calls
                     .captured
                     .iter()

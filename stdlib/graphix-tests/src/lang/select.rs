@@ -10884,6 +10884,51 @@ async fn undriven_write_warning(mode: Mode) -> Result<()> {
 
 modes!(undriven_write_warning);
 
+// A function that performs an effect and reads none of its parameters is
+// warned of: a builtin that acts, or a function that prints, writes or
+// raises. One clocked to its parameter, one that samples it, one that
+// names it `_`, one that computes and one that calls its own parameter
+// are not.
+async fn undriven_effect_warning(mode: Mode) -> Result<()> {
+    let (tx, _rx) = tokio::sync::mpsc::channel(100);
+    let flags = mode.flags() | CFlag::WarningsAreErrors;
+    let ctx = TestCtx::start(
+        config(tx, &crate::TEST_REGISTER, vec![], |ctx| {
+            ctx.control.set_par_mode(mode.par())
+        })?
+        .flags(flags),
+    )
+    .await?;
+    for src in [
+        literal!(r#"{ let h = |c| on c { println("x") }; h(1) }"#),
+        literal!(r#"{ let h = |c| println(c ~ "x"); h(1) }"#),
+        literal!(r#"{ let h = |_| println("x"); h(1) }"#),
+        literal!("{ let f = |x: i64| x + 1; let h = |c| f(1); h(1) }"),
+        literal!("{ let h = |c, f: fn(x: i64) -> i64| f(1); h(1, |x| x) }"),
+    ] {
+        ctx.rt.compile(src.clone()).await.map_err(|e| anyhow::anyhow!("{src}: {e:#}"))?;
+    }
+    for src in [
+        literal!(r#"{ let h = |c| println("x"); h(1) }"#),
+        literal!(r#"{ let p = "/nowhere"; let h = |c| sys::fs::read_all(p); h(1) }"#),
+        literal!(r#"{ let say = |s: string| println(s); let h = |c| say("x"); h(1) }"#),
+        literal!(
+            "{ let n = 0; let bump = |x: i64| n <- x ~ n + 1; let h = |c| bump(1); h(1) }"
+        ),
+    ] {
+        let error = ctx.rt.compile(src).await.unwrap_err();
+        let error = format!("{error:#}");
+        assert!(
+            error.contains("performs an effect and reads none of its parameters"),
+            "{error}"
+        );
+    }
+    ctx.shutdown().await;
+    Ok(())
+}
+
+modes!(undriven_effect_warning);
+
 // A builtin that consumes events in an arm, reading only what no entry of
 // the arm fires, is warned of: it shows what it showed before the arm
 // slept. One fed the arm's bind, the scrutinee or a bind of an arm around

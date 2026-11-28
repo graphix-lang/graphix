@@ -117,12 +117,20 @@ issued by it: it runs once, as anywhere. Give it the event.
 Item 2 of the review asked for two cheap reports beside the block, and
 both judge no intent:
 
-- **A function that writes and reads none of its parameters is warned
-  of** (`node::select::warn_undriven_writes`, CR `a-language-02`): the
-  call drives nothing in it, so the write follows its own right side.
-  `|_|` says the call is not what it acts on. It reads the function's
-  own text, so a handler that only calls an effect is not caught. Pin:
-  `lang::select::undriven_write_warning`.
+- **A function that writes or performs an effect and reads none of its
+  parameters is warned of** (`node::select::warn_undriven_writes`,
+  `warn_undriven_effect`, CR `a-language-02`): the call drives nothing
+  in it, so what it does follows its own inputs. `|_|` says the call is
+  not what it acts on. The write is read off the function's own text at
+  its compile; the effect is a call its checked body makes that acts
+  (a builtin that is async or Io, a function that prints, raises or
+  writes a binding it does not own), judged at the definition's check.
+  An effect inside a callback the function hands on is not seen. A
+  census of both repos with the warning made an error found none in
+  the stdlib, the book, the skill or the admin port; the fixtures it
+  finds ignore a parameter on purpose (a collection callback that
+  ignores its element, a function a seq step calls with a unit). Pins:
+  `lang::select::undriven_write_warning`, `undriven_effect_warning`.
 - **A program that spins is reported once** (`GX::spinning`, CR
   `a-language-07`): the runtime counts cycles that nothing but queued
   variable writes started, and at 2^20 in a row logs under

@@ -370,7 +370,7 @@ impl<R: Rt> Select<R> {
 // after the first cycle? A constant source has every slot born then, so warning there
 // would be noise. probe:
 // design/review-2026-11-16/repro/x-rerun-4-slot-constant-no-warning.gx (x-rerun-4-04)
-// CR claude for claude: [structure/high] The check warns of a constant action in an arm
+// XCR claude for claude: [structure/high] The check warns of a constant action in an arm
 // but not of the commonest handler mistake: a lambda that writes or performs Io and
 // never reads a named parameter, so nothing in it is driven by the call. In the probe
 // `let save = |c| select valid { .. }` shows its error text in the first cycle and
@@ -393,6 +393,19 @@ impl<R: Rt> Select<R> {
 // 'performs Io' half, a handler that only calls an effect and ignores its parameter
 // (`|c| println("x")`), which needs the definition's facts and cannot be read off its
 // text.
+// 2026-11-27 claude: The effect half is built (`warn_undriven_effect`, at the
+// definition's check, where its body's calls are resolved): a function that names none
+// of its parameters and makes a call that acts (an async or Io builtin given an
+// argument, or a function that prints, raises or writes a binding it does not own) is
+// warned of; `|_|` silences it. Census, the whole gate with the warning made an error:
+// nothing in the stdlib, the book's examples and fences, the skill, the TUI examples or
+// the admin port (47 of 47); seven test fixtures that ignore a parameter on purpose
+// (lib_tests::typecheck::hof_init_json_read and hof_list_init_json_read and
+// lib_tests::tcp::tcp_accept_busy_trigger, an `init` callback that ignores its index;
+// three of lang::seq_calls, a function a seq step calls with a unit;
+// lang::types::written_body_annotation_variable_is_monomorphic). Not seen: an effect
+// inside a callback the function hands on (`|c| array::map(xs, |x| println(x))`).
+// Regression: lang::select::undriven_effect_warning beside undriven_write_warning.
 fn warn_constant_action<R: Rt>(
     ctx: &CompileCtx<R>,
     flags: BitFlags<CFlag>,
@@ -560,26 +573,19 @@ fn warn_stale_consumer<R: Rt>(
     })
 }
 
-/// A function written to act when it is called has to read what the call
-/// gives it: a write in its body follows its own right side, so one that
-/// reads no parameter fires with no call at all (a handler that feeds
-/// itself, or acts as soon as its inputs allow). Warned of where the
-/// function's own text writes a binding and names none of its
-/// parameters; `|_|` says the call is not what it acts on.
-pub(super) fn warn_undriven_writes<R: Rt>(
-    ctx: &CompileCtx<R>,
-    flags: BitFlags<CFlag>,
-    spec: &Expr,
-    l: &crate::expr::LambdaExpr,
-) -> Result<()> {
-    let crate::expr::LambdaBody::Expr(body) = &l.body else { return Ok(()) };
+/// What a function's own text says of the call that makes it: `None`
+/// where it names one of its parameters, or has none its author wrote;
+/// else whether the text writes a binding. A function that names no
+/// parameter is driven by no call: what it does follows its own inputs.
+fn undriven(l: &crate::expr::LambdaExpr) -> Option<bool> {
+    let crate::expr::LambdaBody::Expr(body) = &l.body else { return None };
     let mut params: SmallVec<[ArcStr; 4]> = SmallVec::new();
     for a in l.args.iter() {
         a.pattern.with_names(&mut |n| params.push(n.clone()))
     }
     // a lowering's function is no handler its author wrote
     if params.is_empty() || params.iter().all(|p| crate::is_lowered(p)) {
-        return Ok(());
+        return None;
     }
     // a write in the function's own text, not in a function it holds
     fn writes(e: &Expr) -> bool {
@@ -606,7 +612,22 @@ pub(super) fn warn_undriven_writes<R: Rt>(
                 _ => false,
             }
     });
-    if reads || !writes(body) {
+    (!reads).then(|| writes(body))
+}
+
+/// A function written to act when it is called has to read what the call
+/// gives it: a write in its body follows its own right side, so one that
+/// reads no parameter fires with no call at all (a handler that feeds
+/// itself, or acts as soon as its inputs allow). Warned of where the
+/// function's own text writes a binding and names none of its
+/// parameters; `|_|` says the call is not what it acts on.
+pub(super) fn warn_undriven_writes<R: Rt>(
+    ctx: &CompileCtx<R>,
+    flags: BitFlags<CFlag>,
+    spec: &Expr,
+    l: &crate::expr::LambdaExpr,
+) -> Result<()> {
+    if undriven(l) != Some(true) {
         return Ok(());
     }
     ctx.env.warn(
@@ -618,6 +639,38 @@ pub(super) fn warn_undriven_writes<R: Rt>(
          drives nothing in it: the write follows its own right side, and acts with no \
          call at all. Clock it to a parameter (`|c| on c { .. }`), or name the \
          parameter `_` if the call is not what it acts on",
+    )
+}
+
+/// [`warn_undriven_writes`] for an effect: a function whose checked body
+/// `g` makes a call that acts ([`acts_on_the_world`]) and whose text names
+/// none of its parameters acts as its own inputs fire, once as it is born
+/// where they are constants, and never because it was called.
+pub(super) fn warn_undriven_effect<R: Rt>(
+    ctx: &CompileCtx<R>,
+    flags: BitFlags<CFlag>,
+    spec: &Expr,
+    g: &super::lambda::GXLambda<R>,
+) -> Result<()> {
+    let ExprKind::Lambda(l) = &spec.kind else { return Ok(()) };
+    if undriven(l) != Some(false) {
+        return Ok(());
+    }
+    let mut acts = false;
+    crate::analysis::for_each_call(g, &mut |cs| acts |= acts_on_the_world(ctx, cs));
+    if !acts {
+        return Ok(());
+    }
+    ctx.env.warn(
+        flags,
+        spec,
+        spec.pos,
+        spec.end.0,
+        "this function performs an effect and reads none of its parameters, so the \
+         call drives nothing in it: the effect follows its own inputs, and runs once, \
+         as the function is born, where they are constants. Clock it to a parameter \
+         (`|c| on c { .. }`), sample one (`c ~ v`), or name the parameter `_` if the \
+         call is not what it acts on",
     )
 }
 
