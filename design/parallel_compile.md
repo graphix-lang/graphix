@@ -549,6 +549,21 @@ they are disjoint the instance is refused
 (`InstanceTypes::settle`, a unit test in `lambda.rs`'s `settle_tests`):
 the kernel would read the value at the wrong representation.
 
+**A parameter knows more than its definition only while nothing writes
+it.** An instance is built at its site's signature, and a site may pass
+less than the parameter takes (a collection's slot passes the element to a
+callback declared to take more; a function value is called where its
+parameter's type is one member of what it takes). A parameter the body
+only reads holds only what the site passes, so it is typed by the site
+and the body fuses over that. A parameter the body writes (a connect to
+it, a `&mut` of it or of a part of it) holds what is written too: the
+instance types it as the definition's check settled it, as it types the
+names a parameter's pattern binds (`node::lambda::written_formals`,
+`DefTable::formals`). Typed by its site such a binding was a slot of the
+site's type holding a value of another, and a kernel reading it ended the
+run on its guard (`lang::functions::
+a_callback_writes_its_parameter_a_type_its_site_never_passes`).
+
 An instance judges nothing: what its definition's check accepted, it
 accepts (a refusal there is a check gap; the operators' mixed-numeric
 rule was one, closed by `Singleton`, `tvar_constraints.md`). It still

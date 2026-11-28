@@ -34,8 +34,8 @@ use crate::{
     reference::{Captures, Lives},
     stack::ensure_sufficient,
     typ::{
-        DefaultType, FnArgKind, FnArgType, FnType, ResolvedRef, TVar, TraitId, Type,
-        TypeMismatch, bounds, check_bounds_acyclic,
+        DefaultType, FnArgKind, FnArgType, FnType, Mutability, ResolvedRef, TVar,
+        TraitId, Type, TypeMismatch, bounds, check_bounds_acyclic,
         tvar::{AtLevel, Declaring, InTask, Level, RigidGate, TaskId, current_level},
     },
     wrap,
@@ -104,6 +104,9 @@ pub struct DefTable {
     /// that copy as the instance has it. Not imaged: a restored
     /// definition's calls find their instances' types again.
     copies: AHashMap<ExprId, Box<[(usize, TVar)]>>,
+    /// Which parameters the body's text writes, by position
+    /// ([`Self::written`]): read off the body by its first instance.
+    written: OnceLock<Box<[bool]>>,
 }
 
 #[derive(Debug, Clone, netidx_derive::Pack)]
@@ -205,7 +208,39 @@ impl DefTable {
             captures,
             defaults: AHashSet::default(),
             copies: AHashMap::default(),
+            written: OnceLock::new(),
         }
+    }
+
+    /// Which of `argspec`'s parameters `body`'s text writes: a connect to
+    /// one bound by name, or a `&mut` of it or of a part of it. A name the
+    /// body binds again is counted too.
+    fn written(&self, argspec: &[Arg], body: &Expr) -> &[bool] {
+        self.written.get_or_init(|| {
+            let named = |p: &ModPath, name: &str| Path::parts(&p.0).next() == Some(name);
+            let writes = |name: &ArcStr| {
+                body.fold(false, &mut |found, e| {
+                    found
+                        || match &e.kind {
+                            expr::ExprKind::Connect {
+                                name: to, deref: false, ..
+                            } => named(to, name),
+                            expr::ExprKind::ByRef(Mutability::Mut, of) => {
+                                of.fold(false, &mut |found, e| {
+                                    found
+                                        || matches!(
+                                            &e.kind,
+                                            expr::ExprKind::Ref { name: read }
+                                                if named(read, name)
+                                        )
+                                })
+                            }
+                            _ => false,
+                        }
+                })
+            };
+            argspec.iter().map(|a| a.pattern.single_bind().is_some_and(writes)).collect()
+        })
     }
 
     /// Every type the table's rows hold but the signatures'.
@@ -1480,6 +1515,41 @@ impl<R: Rt> GXLambda<R> {
     }
 }
 
+/// `site`, the signature an instance is built at, with each parameter its
+/// body writes at the type its definition's check settled, as the names a
+/// parameter's pattern binds are. A site may pass less than the parameter
+/// takes, and a parameter nothing writes holds only what its site passes;
+/// one the body writes holds what is written too.
+fn written_formals<R: Rt>(
+    ctx: &CompileCtx<R>,
+    site: Arc<FnType>,
+    def: &FnType,
+    types: &InstanceTypes,
+    argspec: &[Arg],
+    body: &Expr,
+) -> Arc<FnType> {
+    if site.args.len() != def.args.len() || site.args.len() != argspec.len() {
+        return site;
+    }
+    let mut args: Option<LPooled<Vec<FnArgType>>> = None;
+    let written = types.tables.table.written(argspec, body);
+    for (i, _) in written.iter().enumerate().filter(|(_, written)| **written) {
+        let settled = types.instance_of(&def.args[i].typ);
+        // a site whose type holds the definition's passes all of it
+        if site.args[i].typ.contains(&ctx.env, &settled).unwrap_or(false) {
+            continue;
+        }
+        let args = args.get_or_insert_with(|| site.args.iter().cloned().collect());
+        args[i].typ = settled
+    }
+    match args {
+        None => site,
+        Some(mut args) => {
+            Arc::new(FnType { args: Arc::from_iter(args.drain(..)), ..(*site).clone() })
+        }
+    }
+}
+
 /// How an instance's check types its body.
 #[derive(Debug)]
 pub(crate) enum Typing {
@@ -1920,6 +1990,12 @@ impl<R: Rt> GXLambda<R> {
                 elab_audit::leave(ctx.def_gate_depth, "instance-signature", &body, &res);
                 res?
             }
+        };
+        let typ = match (&types, &typing) {
+            (Some(types), Typing::Substituted(_, def)) => {
+                written_formals(ctx, typ, def, types, &argspec, &body)
+            }
+            (_, _) => typ,
         };
         // what a type the body writes names: the instance's variables,
         // under the definition's names

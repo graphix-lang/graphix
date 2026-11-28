@@ -688,6 +688,8 @@ trace	wake-stale-bottom-sep2026/02_let.gx
 trace	wake-stale-bottom-sep2026/03_call.gx
 trace	wake-stale-bottom-sep2026/04_map_source.gx
 trace	wake-stale-bottom-sep2026/05_fold_init.gx
+trace	written-formal-nov2026/01_a_callback_writes_its_parameter_past_its_site.gx
+trace	written-formal-nov2026/02_a_callback_writes_its_parameter_through_a_reference.gx
 reject	N: type mismatch uN does not contain string	written-local-generic-nov2026/00_a_block_gives_its_written_local.gx
 trace	written-local-generic-nov2026/01_a_pattern_over_a_literal_with_a_block.gx
 trace	xkernel-gate-jul2026/01_two_monos_nested_select_gate.gx

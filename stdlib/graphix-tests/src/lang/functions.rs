@@ -7448,3 +7448,54 @@ run!(
        let m = { let z = 1; { let q = f; q } }; 7 }",
     is(Value::I64(7))
 );
+
+// A parameter its body writes is typed by the definition in every
+// instance, as a name a parameter's pattern binds is: the site passes an
+// i64 and the body writes a string, and the instance's binding holds both.
+// Typed by its site alone the binding was an i64 slot: a kernel read the
+// string as one and the run ended.
+run!(
+    a_callback_writes_its_parameter_a_type_its_site_never_passes,
+    "{ let m = array::map([1], |x| { x <- \"hello\"; \
+       select x { i64 as n => n + 1, string as s => str::len(s) } }); \
+     array::group(m, |i, _| i == 2) }",
+    prints("[[i64:2], [i64:5]]")
+);
+
+run!(
+    a_declared_callback_parameter_is_written_past_its_site,
+    "{ let m = array::map([1], |x: [i64, string]| { x <- \"hello\"; \
+       select x { i64 as n => n + 1, string as s => str::len(s) } }); \
+     array::group(m, |i, _| i == 2) }",
+    prints("[[i64:2], [i64:5]]")
+);
+
+run!(
+    a_function_passed_as_an_argument_writes_its_parameter_past_its_site,
+    "{ let apply = |g: fn(x: i64) -> i64, v: i64| g(v); \
+       let r = apply(|x| { x <- \"hello\"; \
+         select x { i64 as n => n + 1, string as s => str::len(s) } }, 1); \
+     array::group(r, |i, _| i == 2) }",
+    prints("[i64:2, i64:5]")
+);
+
+// A `&mut` of the parameter is a write of it: the reference's type is the
+// definition's in the instance, where the site's was refused by the build
+// after the check had passed it.
+run!(
+    a_callback_writes_its_parameter_through_a_reference,
+    "{ let m = array::map([1], |x| { let r = &mut x; *r <- \"hello\"; x }); \
+     array::group(m, |i, _| i == 2) }",
+    prints("[[i64:1], [\"hello\"]]");
+    FuseExpect::None
+);
+
+// A parameter nothing writes holds what its site passes, and is typed by
+// it: the callback fuses over an i64 where it is declared to take more.
+run!(
+    a_parameter_nothing_writes_is_its_sites_type,
+    "array::map([1], |x: [i64, string]| \
+       #[native] select x { i64 as n => n + 1, string as s => str::len(s) })",
+    prints("[i64:2]");
+    FuseExpect::Jit
+);

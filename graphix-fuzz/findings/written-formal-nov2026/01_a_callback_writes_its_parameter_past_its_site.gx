@@ -1,0 +1,9 @@
+// A parameter its body writes is typed by its definition in every instance
+// (design/parallel_compile.md, instances; node::lambda::written_formals). A
+// collection slot's site passes the element, an i64, where the callback's own
+// parameter holds `[i64, string]` once the body writes it. The instance typed the
+// binding by its site, so a region read it through an i64 slot and the process
+// ended on the kernel's guard: "kernel param `x`: runtime String("hello") does not
+// match the compiled Scalar(I64) slot". The node-walk answered.
+// Expected (both engines): [2], then [5].
+{ let m = array::map([1], |x| { x <- "hello"; select x { i64 as n => n + 1, string as s => str::len(s) } }); m }

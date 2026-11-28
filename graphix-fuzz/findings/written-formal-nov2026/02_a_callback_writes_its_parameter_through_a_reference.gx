@@ -1,0 +1,8 @@
+// A `&mut` of a parameter is a write of it (node::lambda::written_formals): the
+// reference is of the definition's type in the instance. Typed by its site the
+// parameter was an i64 and `&mut x` a `&mut i64`, where the definition's check had
+// settled `&mut [i64, string]`: the build refused a program the check had passed
+// ("a node of an instance is &mut i64 where its definition's check settled &mut
+// [i64, string]").
+// Expected (both engines): 1 at step 4, the count of `m`.
+{ let y = array::iter([1, 2, 3, 4]); let m = array::map([1], |x| select 1 { 1 => x, _ => { let r0 = &mut x; *r0 <- "hello"; let p: string = never(); (*r0, p) } }); let c = count(m); select count(y) { 4 => c, _ => never() } }
