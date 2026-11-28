@@ -82,7 +82,8 @@ and a dynamic call or a later REPL call checks the attribute when it builds
 that instance.
 
 `str::parse`, `hbs::render`, the json/toml/pack writers, `array::sort`,
-`list::sort`, `array::dedup` and every `re::*` builtin run in the node-walk.
+`array::sort_by`, `list::sort`, `array::dedup` and every `re::*` builtin run
+in the node-walk.
 They keep their last result while their own arguments are stale; a fused
 fast call can run again whenever any input of its kernel fires. Bind these
 operations outside a `#[native]` expression and pass their results in.

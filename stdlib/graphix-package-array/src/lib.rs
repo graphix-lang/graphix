@@ -13,7 +13,7 @@ use graphix_compiler::{
     rep,
     typ::{FnType, Type},
 };
-use graphix_package_core::{bottom_of, seam_tick, seam_value, sort_values};
+use graphix_package_core::{bottom_of, seam_tick, seam_value, sort_by_key};
 use graphix_rt::GXRt;
 use netidx::subscriber::Value;
 use netidx_core::pack::PackError;
@@ -109,7 +109,7 @@ graphix_package_core::fast_builtin!(Flatten, FlattenEv, "array_flatten", fc_flat
 fn fc_sort(args: &[Value]) -> Option<Value> {
     match args {
         [dir, Value::Bool(numeric), Value::Array(a)] => {
-            let mut sorted = sort_values(dir, *numeric, a.iter().cloned())?;
+            let mut sorted = sort_by_key(dir, *numeric, a.iter().cloned(), |v| v)?;
             Some(Value::Array(ValArray::from_iter_exact(sorted.drain(..))))
         }
         _ => None,
@@ -117,6 +117,22 @@ fn fc_sort(args: &[Value]) -> Option<Value> {
 }
 
 graphix_package_core::fast_builtin!(Sort, SortEv, "array_sort", fc_sort; cached; ordered(2..3));
+
+/// `rows` in the order of `keys`, the key of each at its index.
+fn fc_sort_keyed(args: &[Value]) -> Option<Value> {
+    match args {
+        [dir, Value::Bool(numeric), Value::Array(keys), Value::Array(rows)]
+            if keys.len() == rows.len() =>
+        {
+            let keyed = keys.iter().cloned().zip(rows.iter().cloned());
+            let mut sorted = sort_by_key(dir, *numeric, keyed, |(k, _)| k)?;
+            Some(array_of(sorted.len(), sorted.drain(..).map(|(_, row)| row)))
+        }
+        _ => None,
+    }
+}
+
+graphix_package_core::fast_builtin!(SortKeyed, SortKeyedEv, "array_sort_keyed", fc_sort_keyed; cached; ordered(2..3));
 
 fn fc_dedup(args: &[Value]) -> Option<Value> {
     match &args[0] {
@@ -403,6 +419,15 @@ fn fc_rotate(args: &[Value]) -> Option<Value> {
 
 graphix_package_core::fast_builtin!(Rotate, RotateEv, "array_rotate", fc_rotate);
 
+fn fc_reverse(args: &[Value]) -> Option<Value> {
+    match &args[0] {
+        Value::Array(a) => Some(array_of(a.len(), a.iter().rev().cloned())),
+        _ => None,
+    }
+}
+
+graphix_package_core::fast_builtin!(Reverse, ReverseEv, "array_reverse", fc_reverse);
+
 graphix_derive::defpackage! {
     builtins => [
         Concat,
@@ -417,7 +442,9 @@ graphix_derive::defpackage! {
         PushBack,
         PushFront,
         Sort,
+        SortKeyed,
         Window,
         Rotate,
+        Reverse,
     ],
 }

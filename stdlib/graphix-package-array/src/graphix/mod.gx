@@ -22,3 +22,9 @@ let find = |a: Array<'a>, f: fn(x: 'a) -> bool throws 'e| -> Option<'a> throws '
 let find_map = |a: Array<'a>, f: fn(x: 'a) -> Option<'b> throws 'e| -> Option<'b> throws 'e 'array_find_map;
 let fold = |a: Array<'a>, init: 'b, f: fn(acc: 'b, x: 'a) -> 'b throws 'e| -> 'b throws 'e 'array_fold;
 let rotate = |#n: i64 = 1, a: Array<'a>| -> Array<'a> 'array_rotate;
+let reverse = |a: Array<'a>| -> Array<'a> 'array_reverse;
+let sort_keyed = 'k: Ordered |#dir: Direction, #numeric: bool, keys: Array<'k>, a: Array<'a>| -> Array<'a> 'array_sort_keyed;
+let sort_by = 'k: Ordered |#dir: Direction = `Ascending, #numeric: bool = false, a: Array<'a>, f: fn(x: 'a) -> 'k throws 'e| -> Array<'a> throws 'e {
+    let (keys, rows) = unzip(map(a, |x| (f(x), x)));
+    sort_keyed(#dir, #numeric, keys, rows)
+};

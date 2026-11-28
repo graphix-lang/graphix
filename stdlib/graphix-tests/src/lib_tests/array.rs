@@ -1300,3 +1300,56 @@ run!(numeric_sort_orders_decimals_exactly, r#"{
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(v) if v.to_string() == r#"[[decimal:0.1, decimal:0.10000000000000000001], ["0.1", "0.10000000000000000001", "9007199254740993.25", "9007199254740993.5"], [f64:-0.1, decimal:-0.1000000000000000055511151231, decimal:0.1000000000000000055511151231, f64:0.1, decimal:0.1000000000000000055511151232]]"#)
 }; FuseExpect::Jit);
+
+run!(
+    array_reverse,
+    r#"{
+    let empty: Array<i64> = [];
+    (array::reverse([1, 2, 3]), array::reverse(["a"]), array::reverse(empty),
+     array::reverse(array::reverse([1, 2])))
+}"#,
+    prints(r#"[[i64:3, i64:2, i64:1], ["a"], [], [i64:1, i64:2]]"#)
+);
+
+// Only the keys are compared: a row holding a function sorts, and rows
+// with equal keys keep the order they came in, in either direction.
+run!(
+    array_sort_by_compares_keys_alone_and_is_stable,
+    r#"{
+    type Row = {name: string, age: i64, pick: fn(x: i64) -> i64};
+    let rows: Array<Row> = [
+      {name: "cid", age: 30, pick: |x| x},
+      {name: "ann", age: 30, pick: |x| x + 1},
+      {name: "bob", age: 25, pick: |x| x + 2}
+    ];
+    let names = |rs: Array<Row>| array::map(rs, |r| r.name);
+    (names(array::sort_by(rows, |r| r.age)),
+     names(array::sort_by(#dir: `Descending, rows, |r| r.age)),
+     names(array::sort_by(rows, |r| r.name)),
+     array::sort_by(#numeric: true, ["10", "9", "100"], |s| s),
+     array::sort_by(["bb", "a", "ccc"], |s| 0 - str::len(s)))
+}"#,
+    prints(
+        r#"[["bob", "cid", "ann"], ["cid", "ann", "bob"], ["ann", "bob", "cid"], ["9", "10", "100"], ["ccc", "bb", "a"]]"#
+    )
+);
+
+// A key that reads a variable sorts again when the variable changes.
+run!(
+    array_sort_by_follows_its_key,
+    r#"{
+    let rows = [("b", 1), ("a", 2)];
+    let by_name = false;
+    by_name <- true;
+    let sorted = array::sort_by(rows, |(n, k)| select by_name { true => n, false => "[k]" });
+    array::group(array::map(sorted, |(n, _)| n), |len, _| len == 2)
+}"#,
+    prints(r#"[["b", "a"], ["a", "b"]]"#)
+);
+
+run!(
+    array_sort_by_key_is_ordered,
+    r#"array::sort_by([1, 2], |x| |y| y + x)"#,
+    refused("Ordered");
+    FuseExpect::None
+);

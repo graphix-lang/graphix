@@ -1805,40 +1805,42 @@ impl NumKey {
     }
 }
 
-/// The sort every collection's `sort(#dir, #numeric, c)` runs: `dir`
-/// is the `Direction` tag (`Ascending`/`Descending`, anything else is
-/// no value), `numeric` compares values as numbers ([`NumKey`]).
-pub fn sort_values(
+/// The sort every collection's `sort` and `sort_by` run: `items` in the
+/// order of their keys, equal keys in the order they came. `dir` is the
+/// `Direction` tag (`Ascending`/`Descending`, anything else is no
+/// value), `numeric` compares keys as numbers ([`NumKey`]).
+pub fn sort_by_key<T: Clone + 'static>(
     dir: &Value,
     numeric: bool,
-    vals: impl Iterator<Item = Value>,
-) -> Option<LPooled<Vec<Value>>> {
+    items: impl Iterator<Item = T>,
+    key: impl Fn(&T) -> &Value,
+) -> Option<LPooled<Vec<T>>> {
     let Some((dir, [])) = rep::variant(dir) else { return None };
     let descending = match dir.as_str() {
         "Ascending" => false,
         "Descending" => true,
         _ => return None,
     };
-    let mut buf: LPooled<Vec<Value>> = vals.collect();
+    let mut buf: LPooled<Vec<T>> = items.collect();
     // an Ord that is no total order (a user impl) may panic the sort,
     // which leaves every element in the buffer: its order is wrong, and
     // the runtime goes on
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if numeric {
             // each element keyed once, beside it
-            let mut keyed: LPooled<Vec<(NumKey, Value)>> =
-                buf.iter().map(|v| (NumKey::of(v), v.clone())).collect();
+            let mut keyed: LPooled<Vec<(NumKey, T)>> =
+                buf.iter().map(|t| (NumKey::of(key(t)), t.clone())).collect();
             if descending {
                 keyed.sort_by(|a, b| b.0.cmp(&a.0))
             } else {
                 keyed.sort_by(|a, b| a.0.cmp(&b.0))
             }
             buf.clear();
-            buf.extend(keyed.drain(..).map(|(_, v)| v));
+            buf.extend(keyed.drain(..).map(|(_, t)| t));
         } else if descending {
-            buf.sort_by(|a, b| b.cmp(a))
+            buf.sort_by(|a, b| key(b).cmp(key(a)))
         } else {
-            buf.sort()
+            buf.sort_by(|a, b| key(a).cmp(key(b)))
         }
     }));
     Some(buf)

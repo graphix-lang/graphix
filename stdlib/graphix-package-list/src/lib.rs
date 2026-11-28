@@ -9,7 +9,7 @@ use graphix_compiler::{
     },
     rep,
 };
-use graphix_package_core::sort_values;
+use graphix_package_core::sort_by_key;
 use netidx::subscriber::Value;
 use netidx_value::ValArray;
 use poolshark::local::LPooled;
@@ -225,7 +225,8 @@ graphix_package_core::fast_builtin!(Flatten, FlattenEv, "list_flatten", fc_flatt
 fn fc_sort(args: &[Value]) -> Option<Value> {
     match args {
         [dir, Value::Bool(numeric), list] if is_list(list) => {
-            let mut sorted = sort_values(dir, *numeric, ListIter::new(list.clone()))?;
+            let mut sorted =
+                sort_by_key(dir, *numeric, ListIter::new(list.clone()), |v| v)?;
             Some(cons_all(&mut sorted, make_nil()))
         }
         _ => None,

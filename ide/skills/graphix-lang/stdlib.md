@@ -9,9 +9,12 @@ calls can run without a new trigger. A wrapper site releases one call per
 runtime cycle. `#count: &mut depth` observes queued invocations.
 
 `array`: map filter filter_map fold flatten find find_map concat push
-window(#n, arr, @v) len iter iterq sort enumerate zip (`window`'s second
-argument is the array windowed, usually `t ~ data`, and its values after
-it are variadic). `filter_map`'s callback returns `` [`Keep('b),
+window(#n, arr, @v) len iter iterq sort sort_by reverse rotate enumerate
+zip unzip (`window`'s second argument is the array windowed, usually `t ~
+data`, and its values after it are variadic). `sort_by(#dir, #numeric, a,
+|x| key)` compares the keys alone and keeps equal keys in order, so rows
+that hold functions sort: `array::sort_by(rows, |r| r.age)`. `filter_map`'s
+callback returns `` [`Keep('b),
 null] ``: `null` drops the element and `` `Keep(v) `` keeps `v`, a null
 included; a bare `v` is refused. `|x| select x { null as _ => null, v =>
 `Keep(v) }` over `[1, null, 2]` gives `[1, 2]`. `list`
@@ -91,4 +94,7 @@ sleeping arm or in a seq step that waits for it.
 no "[null, `Keep('b: unbound)] does not contain i64" array::filter_map([1], |x| x)
 ok array::filter_map([1, null, 2], |x| select x { null as _ => null, v => `Keep(v) })
 ok let v = 1; let data = [1.0]; array::window(#n: 60, v ~ data, cast<f64>(v)?)
+ok let rows = [{age: 3, f: |x: i64| x}]; array::sort_by(#dir: `Descending, rows, |r| r.age)
+no "Ordered" array::sort_by([1, 2], |x| |y: i64| y + x)
+ok array::reverse([1, 2, 3])
 ```
