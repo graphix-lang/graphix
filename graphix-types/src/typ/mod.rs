@@ -2999,6 +2999,29 @@ impl Type {
         })
     }
 
+    /// Whether every cell this type reaches through the bindings of its
+    /// variables is still there. The record of a binding a run-time bind
+    /// made can outlast the arena of the epoch that made its type; a
+    /// reader that did not make the type asks this before it reads it.
+    /// Sound only where no epoch can end meanwhile: on the thread that
+    /// ends them.
+    pub fn alive(&self) -> bool {
+        ensure_sufficient(|| match self {
+            Type::TVar(tv) => match tv.binding_if_alive() {
+                None => false,
+                Some(None) => true,
+                Some(Some(t)) => t.alive(),
+            },
+            t => {
+                let part = &mut |c: &Type| match c.alive() {
+                    true => ControlFlow::Continue(()),
+                    false => ControlFlow::Break(()),
+                };
+                t.try_for_each_child(part).is_continue()
+            }
+        })
+    }
+
     /// [`Self::try_for_each_child`] without early exit.
     #[doc(hidden)]
     pub fn for_each_child(&self, f: &mut impl FnMut(&Type)) {

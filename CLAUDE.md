@@ -136,8 +136,8 @@ off-topic failure is discussed with Eric before it is fixed.
   `#[native]` asserts that an expression does. Details:
   `design/testing.md`.
 - **graphix-fuzz** (`design/graphix_fuzz.md`): node-walk vs JIT with a
-  per-cycle trace oracle, cold and warm images, forked against serial, and
-  check against build. Its `findings/` corpus is the regression gate:
+  per-cycle trace oracle, cold and warm images, forked against serial,
+  watched by a debugger against alone, and check against build. Its `findings/` corpus is the regression gate:
   `regress` runs every pin and compares its fused-region count and verdict
   with `fusecheck.manifest` and `outcome.manifest`; after an intended
   change, `fusecheck --bless` and `regress --bless` rewrite them (rebuild
@@ -443,7 +443,9 @@ outlives the session that set it. The service is
 `graphix_rt::debug` (an embedder hands it a stream or a listener), its
 hooks `graphix-rt/src/gx/debug.rs`, and what it asks of the node graph
 rides `Update::refs` (`graphix-compiler/src/seek.rs`). A debugger that
-changes what a program computes is a bug.
+changes what a program computes is a bug. It reads a type only as a
+snapshot made on the runtime's thread (`gx::debug::Named`): a type's
+cells go with the instance that made them.
 
 `TRACE` (`set_trace`, `with_trace(enable, spec, f)`, `tdbg!`) scopes
 compiler tracing to one expression — the stdlib typechecks on every

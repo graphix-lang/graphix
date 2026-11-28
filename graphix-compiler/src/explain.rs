@@ -25,7 +25,9 @@ pub enum Because {
 
 #[derive(Debug, Clone)]
 pub enum Note {
-    /// A select: the last value its argument had, and the arm it holds.
+    /// A select: the last value its argument had with its type, a
+    /// snapshot ([`crate::seek::BindSource::fused`]), and the arm it
+    /// holds.
     Select {
         arg: Option<(Value, Type)>,
         arm: Option<usize>,

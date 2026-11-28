@@ -2424,6 +2424,15 @@ impl TVar {
         self.read().cell.get().read().binding.clone()
     }
 
+    /// [`Self::binding`] where the cell is still there; `None` where its
+    /// epoch's arena is gone.
+    pub(crate) fn binding_if_alive(&self) -> Option<Option<Type>> {
+        match &self.read().cell {
+            CellLink::Own(c) => Some(c.read().binding.clone()),
+            CellLink::Epoch(c, _) => c.upgrade().map(|c| c.read().binding.clone()),
+        }
+    }
+
     pub fn is_bound(&self) -> bool {
         self.read().cell.get().read().binding.is_some()
     }

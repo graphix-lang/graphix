@@ -23,7 +23,10 @@ pub struct BindSource {
     pub by: BoundBy,
     /// Every binding `spec` reads from outside itself.
     pub reads: Vec<BindId>,
-    /// For a fused region, its type and the value it last produced.
+    /// For a fused region, its type and the value it last produced. The
+    /// type is a snapshot (`Type::snapshot`): a node's own type holds
+    /// cells of the compile epoch that made it, which the node's delete
+    /// can end, and a debugger reads this later, on another thread.
     pub fused: Option<(Type, Option<Value>)>,
     /// Why its value has none, as far as its nodes tell: nothing where
     /// it has one.

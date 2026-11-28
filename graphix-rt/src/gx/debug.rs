@@ -7,11 +7,12 @@ use super::{EmbedderWrite, GX, SETS};
 use crate::{CompRes, GXEvent, GXExt, GXHandle, GXRt, debug::SessionId};
 use anyhow::Result;
 use arcstr::ArcStr;
+use compact_str::CompactString;
 use graphix_compiler::{
-    BindId, ExecState, Refs, Rt,
+    BindId, ExecState, Refs, Rt, SourcePosition,
     env::{Bind, Env},
     explain::{self, Because},
-    expr::ExprId,
+    expr::{ExprId, ModPath, Origin},
     is_lowered,
     seek::{BindSource, covering, in_file},
     typ::Type,
@@ -35,6 +36,50 @@ const WHY_DEPTH: usize = 32;
 const LOG_CYCLES: usize = 256;
 /// The deliveries the log keeps of one cycle.
 const LOG_WIDTH: usize = 128;
+/// The bindings [`Sessions::known`] holds before it first looks for the
+/// ones the program deleted.
+const KNOWN: usize = 1024;
+
+/// A binding as the debugger tells of it: its record, and its type as a
+/// snapshot that shares no cell with the program's. A type's cells go
+/// with the compile epoch that made them, which the delete of an
+/// instance ends, while a record can stay (a reference still names the
+/// binding) and what a session is told is read later, on its own thread.
+/// So a record's own type is read only where this is made: on the
+/// runtime's thread, the one that ends epochs.
+#[derive(Debug, Clone)]
+pub(crate) struct Named {
+    bind: Arc<Bind>,
+    pub(crate) typ: Type,
+}
+
+impl Named {
+    /// `None` where the epoch that made the type has ended.
+    pub(crate) fn of(bind: &Arc<Bind>) -> Option<Self> {
+        let alive = bind.typ.alive();
+        alive.then(|| Named { bind: bind.clone(), typ: bind.typ.snapshot() })
+    }
+
+    pub(crate) fn id(&self) -> BindId {
+        self.bind.id
+    }
+
+    pub(crate) fn name(&self) -> &CompactString {
+        &self.bind.name
+    }
+
+    pub(crate) fn scope(&self) -> &ModPath {
+        &self.bind.scope
+    }
+
+    pub(crate) fn pos(&self) -> SourcePosition {
+        self.bind.pos
+    }
+
+    pub(crate) fn ori(&self) -> &Origin {
+        &self.bind.ori
+    }
+}
 
 /// What a session asks of the runtime's thread.
 pub(crate) enum Op<X: GXExt> {
@@ -141,7 +186,7 @@ pub(crate) enum Fired {
     },
     Watch {
         watch: u64,
-        bind: Arc<Bind>,
+        bind: Named,
         cycle: u64,
         value: Option<Value>,
     },
@@ -194,7 +239,7 @@ impl Stop {
 #[derive(Clone)]
 pub(crate) struct Logged {
     pub(crate) cycle: u64,
-    pub(crate) delivered: Vec<(Arc<Bind>, Option<Value>)>,
+    pub(crate) delivered: Vec<(Named, Option<Value>)>,
     pub(crate) more: usize,
 }
 
@@ -202,7 +247,7 @@ pub(crate) struct Logged {
 /// cycle of its last delivery, if it had any.
 #[derive(Debug, Clone)]
 pub(crate) struct Held {
-    pub(crate) bind: Arc<Bind>,
+    pub(crate) bind: Named,
     pub(crate) value: Option<Value>,
     pub(crate) written: Option<u64>,
 }
@@ -234,23 +279,26 @@ pub(crate) struct State {
 /// program where it is a break.
 pub(crate) struct Watching {
     pub(crate) n: u64,
-    pub(crate) bind: Arc<Bind>,
+    pub(crate) bind: Named,
     pub(crate) stop: Option<Stop>,
 }
 
-pub(crate) fn held<X: GXExt>(ctx: &ExecState<GXRt<X>>, bind: &Arc<Bind>) -> Held {
-    let var = ctx.rt.var_of(bind.id);
+/// `bind` as it stands; `None` where its type can no longer be read
+/// ([`Named::of`]).
+pub(crate) fn held<X: GXExt>(ctx: &ExecState<GXRt<X>>, bind: &Arc<Bind>) -> Option<Held> {
+    let bind = Named::of(bind)?;
+    let var = ctx.rt.var_of(bind.id());
     let entry = ctx.rt.store.get(&var.id());
-    Held {
-        bind: bind.clone(),
+    Some(Held {
+        bind,
         value: entry.filter(|(tv, _)| !tv.is_bottom()).map(|(tv, _)| tv.value_cloned()),
         written: entry.map(|(_, at)| *at),
-    }
+    })
 }
 
 struct Watch {
     n: u64,
-    id: BindId,
+    bind: Named,
     stop: Option<Stop>,
 }
 
@@ -281,6 +329,11 @@ pub(super) struct Sessions {
     steps: u64,
     /// The last cycles that delivered something.
     log: VecDeque<Logged>,
+    /// Each binding a cycle delivered to, as the log tells of it: `None`
+    /// for one it leaves out ([`logs`]). The ones the program has
+    /// deleted are dropped each time this outgrows `known_cap`.
+    known: IntMap<BindId, Option<Named>>,
+    known_cap: usize,
     watches: Vec<Watch>,
     /// The watches numbered so far.
     watched: u64,
@@ -381,6 +434,13 @@ fn is_fn(typ: &Type) -> bool {
     typ.with_deref(|t| matches!(t, Some(Type::Fn(_))))
 }
 
+/// `id` as the log tells of it: a binding the program's author wrote, no
+/// function, whose type can be read.
+fn logs(env: &Env, id: BindId) -> Option<Named> {
+    let bind = env.by_id.get(&id).filter(|b| authored(env, b))?;
+    Named::of(bind).filter(|b| !is_fn(&b.typ))
+}
+
 /// Whether the program's author wrote `b`: no lowering made its name,
 /// and it is none of a package's own, an instance of one of its
 /// functions included.
@@ -464,8 +524,9 @@ impl<X: GXExt> GX<X> {
             Op::Watch { ids, stop, res } => {
                 self.debug.watched += 1;
                 let n = self.debug.watched;
-                let watches =
-                    ids.into_iter().map(|id| Watch { n, id, stop: stop.clone() });
+                let env = &self.ctx.env;
+                let named = ids.iter().filter_map(|id| Named::of(env.by_id.get(id)?));
+                let watches = named.map(|bind| Watch { n, bind, stop: stop.clone() });
                 self.debug.watches.extend(watches);
                 let _ = res.send(n);
             }
@@ -483,8 +544,12 @@ impl<X: GXExt> GX<X> {
             }
             Op::State { res } => {
                 let watching = |w: &Watch| {
-                    let bind = self.ctx.env.by_id.get(&w.id)?.clone();
-                    Some(Watching { n: w.n, bind, stop: w.stop.clone() })
+                    let had = self.ctx.env.by_id.contains_key(&w.bind.id());
+                    had.then(|| Watching {
+                        n: w.n,
+                        bind: w.bind.clone(),
+                        stop: w.stop.clone(),
+                    })
                 };
                 let _ = res.send(State {
                     sessions: self.debug.by_id.len(),
@@ -496,13 +561,24 @@ impl<X: GXExt> GX<X> {
         }
     }
 
-    // CR claude for claude: [test-gap/medium] design/debugger.md says a debugger that
+    // XCR claude for claude: [test-gap/medium] design/debugger.md says a debugger that
     // changes what a program computes is a bug, and nothing but one hand-written
     // program holds it to that (a_watched_program_computes_the_same in
     // stdlib/graphix-tests/tests/shared/debugger.rs). Add a fuzzer lane: run each
     // generated program alone and with a session attached that watches every binding
     // the program wrote, and compare the two traces per cycle, as Pair::Prune compares
     // a pruned walk with an unpruned one. Found by reading; not run. (debugger-02)
+    // 2026-11-27 claude: Built: Pair::Watched(mode) in graphix-fuzz (watched.rs) runs
+    // each program alone and with a session that watches every binding its author
+    // wrote, in both engines, and holds the traces equal; a session that dies is a
+    // divergence too. Shown to fail by a mutation (a watch that writes its value
+    // again: DIVERGENCE on 'let x = 1; let y = x + 1; y'). Its first corpus run found
+    // the debugger reading a deleted instance's type (fixed: gx::debug::Named). What
+    // catches a regression: graphix-fuzz's
+    // a_watched_run_agrees_with_the_run_alone, the corpus pin
+    // clone-wake-root-jul2026/01 under regress, and
+    // a_deleted_instances_binding_is_survived in
+    // stdlib/graphix-tests/tests/shared/debugger.rs. Not soaked: the fleet is down.
     /// Tell each session what the cycle that just ran produced for it,
     /// take its expressions' values out of the embedder's `batch`, and
     /// hold the program where a break or the last step owed says so.
@@ -526,15 +602,15 @@ impl<X: GXExt> GX<X> {
         batch.retain(|e| !matches!(e, GXEvent::Updated(id, _) if self.debug.owns(id)));
         let mut stop = None;
         for w in self.debug.watches.iter() {
-            let var = self.ctx.rt.var_of(w.id);
+            let var = self.ctx.rt.var_of(w.bind.id());
             let Some((tv, at)) = self.ctx.rt.store.get(&var.id()) else { continue };
-            let Some(bind) = self.ctx.env.by_id.get(&w.id) else { continue };
             if *at == cycle {
                 let value = (!tv.is_bottom()).then(|| tv.value_cloned());
                 if !quiet && w.stop.as_ref().is_some_and(|s| s.met(value.as_ref())) {
                     stop = stop.or(Some(Paused::Break { watch: w.n }))
                 }
-                let fired = Fired::Watch { watch: w.n, bind: bind.clone(), cycle, value };
+                let fired =
+                    Fired::Watch { watch: w.n, bind: w.bind.clone(), cycle, value };
                 self.debug.tell(None, fired)
             }
         }
@@ -567,18 +643,19 @@ impl<X: GXExt> GX<X> {
     /// What this cycle delivered to the bindings the program's author
     /// wrote, functions aside, in the order they were introduced; `None`
     /// where nothing.
-    fn delivered(&self, cycle: u64) -> Option<Logged> {
+    fn delivered(&mut self, cycle: u64) -> Option<Logged> {
         let mut delivered = Vec::new();
         let mut more = 0;
+        let env = &self.ctx.env;
+        let known = &mut self.debug.known;
         for (id, tv) in self.ctx.event.variables.own() {
             let tag = tv.tag();
             if !tag.triggers() {
                 continue;
             }
-            let Some(bind) = self.ctx.env.by_id.get(&id) else { continue };
-            if !authored(&self.ctx.env, bind) || is_fn(&bind.typ) {
+            let Some(bind) = known.entry(id).or_insert_with(|| logs(env, id)) else {
                 continue;
-            }
+            };
             match delivered.len() < LOG_WIDTH {
                 true => {
                     let value = (!tag.is_bottom()).then(|| tv.value_cloned());
@@ -587,7 +664,11 @@ impl<X: GXExt> GX<X> {
                 false => more += 1,
             }
         }
-        delivered.sort_by_key(|(b, _)| b.id);
+        if known.len() > self.debug.known_cap {
+            known.retain(|id, _| env.by_id.contains_key(id));
+            self.debug.known_cap = (2 * known.len()).max(KNOWN)
+        }
+        delivered.sort_by_key(|(b, _)| b.id());
         (!delivered.is_empty()).then_some(Logged { cycle, delivered, more })
     }
 
@@ -610,8 +691,7 @@ impl<X: GXExt> GX<X> {
             n.refs(&mut refs);
             for source in refs.take_sources() {
                 let inputs = self.written_reads(&source.reads);
-                let held =
-                    |id: &BindId| Some(held(&self.ctx, self.ctx.env.by_id.get(id)?));
+                let held = |id: &BindId| held(&self.ctx, self.ctx.env.by_id.get(id)?);
                 let inputs = inputs.iter().filter_map(held).collect();
                 blocks.push(Fused { source, inputs })
             }
@@ -673,6 +753,7 @@ impl<X: GXExt> GX<X> {
                     todo.extend(relevant(&s, false).iter().rev().copied())
                 }
             } else if authored(&self.ctx.env, bind)
+                && bind.typ.alive()
                 && !is_fn(&bind.typ)
                 && !out.contains(&id)
             {
@@ -696,8 +777,7 @@ impl<X: GXExt> GX<X> {
         depth: usize,
         above: &mut LPooled<IntSet<BindId>>,
     ) -> Option<Why> {
-        let bind = self.ctx.env.by_id.get(&id)?;
-        let held = held(&self.ctx, bind);
+        let held = held(&self.ctx, self.ctx.env.by_id.get(&id)?)?;
         if depth > WHY_DEPTH || !above.insert(id) {
             return Some(Why { held, source: None, reads: Vec::new(), again: true });
         }

@@ -316,7 +316,7 @@ impl<R: Rt> Update<R> for FusedKernel<R> {
         {
             let valued = !self.resident.tag().is_bottom() && !self.resident.is_sentinel();
             let produced = valued.then(|| self.resident.value_cloned());
-            let fused = Some((self.typ().clone(), produced));
+            let fused = Some((self.typ().snapshot(), produced));
             let spec = Arc::new(self.spec.clone());
             refs.sought(spec, BoundBy::Fused, fused, Vec::new(), |r| {
                 self.feeders.iter().for_each(|n| n.refs(r))

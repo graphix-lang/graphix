@@ -345,6 +345,18 @@ text.
 - **The cycle log** is read off the cycle's event after its nodes ran
   (`Layered::own`), so it costs a pass over that cycle's deliveries, from
   the first session's attach on.
+- **A type the debugger takes is a snapshot** (`gx::debug::Named`,
+  `Type::snapshot`), made on the runtime's thread, and it reads no other.
+  A type's cells belong to the compile epoch that made them, and the
+  delete of an instance a call built at run time ends its epoch. A
+  binding's record can outlast that (a reference still names the
+  binding, and a write queued for it still lands), and what a session is
+  told is printed later, on the session's own thread. So a record is
+  asked whether its type's cells are still there (`Type::alive`) and the
+  type is copied then: a binding whose type is gone is not told of. A
+  node's type in a `why` note or a fused box is a snapshot for the same
+  reason. The log keeps the snapshot of each binding it has told of
+  (`Sessions::known`), dropping the deleted ones as it grows.
 - **Session images, fusion, parallel evaluation and walk pruning** are
   untouched. A debugger that changes what a program computes is a bug.
 
@@ -363,7 +375,8 @@ the transport's.
   instances told apart; a session's values kept from the embedder and its
   bindings read by the next; a watched program computing what it
   computes alone; a held program waiting, stepped, and held at a break,
-  with the hold, the break and the log found by the next session.
+  with the hold, the break and the log found by the next session; a
+  write landing on a binding whose instance is deleted.
 - The shell (`graphix-shell/tests/shell/debugger.rs`): a second process
   asking a running program, cold and from the image, in both engines; the
   fused box; the default socket's place and permissions; a program
@@ -372,8 +385,10 @@ the transport's.
   limit; one command at a time, each its own process, building on the
   last, with a follower in another process.
 - `why_says_what_the_nodes_know` there pins each kind of note.
-- Not built: a fuzzer lane holding a watched program's trace to the
-  unwatched one's.
+- The fuzzer holds a watched program to the same program alone
+  (`Pair::Watched`, `design/graphix_fuzz.md`): every generated and corpus
+  program in both engines, a session watching every binding its author
+  wrote. Its first corpus run found the dead-type read above.
 
 ## 10. What it does not do
 

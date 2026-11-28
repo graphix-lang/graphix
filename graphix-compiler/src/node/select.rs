@@ -759,7 +759,7 @@ impl<R: Rt> Select<R> {
     /// name another arm's pattern binds has no value.
     fn holds(&self) -> Vec<Because> {
         let parts = Explain::of(&self.arg.node);
-        let arg = self.arg.value.clone().map(|v| (v, self.arg.node.typ().clone()));
+        let arg = self.arg.value.clone().map(|v| (v, self.arg.node.typ().snapshot()));
         let note = Note::Select { arg, arm: self.selected, arms: self.arms.len() };
         vec![Because::Of { spec: self.spec.clone(), note, parts }]
     }
@@ -779,7 +779,7 @@ impl<R: Rt> Select<R> {
                 guards.for_each(|g| cx.explain(&g.node, &mut parts))
             }
         }
-        let arg = self.arg.value.clone().map(|v| (v, self.arg.node.typ().clone()));
+        let arg = self.arg.value.clone().map(|v| (v, self.arg.node.typ().snapshot()));
         let note = Note::Select { arg, arm: self.selected, arms: self.arms.len() };
         out.push(Because::Of { spec: self.spec.clone(), note, parts })
     }

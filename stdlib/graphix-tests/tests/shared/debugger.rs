@@ -355,6 +355,64 @@ acc * 2
     Ok(())
 }
 
+/// A binding deleted while a reference still names it keeps its record,
+/// and a write queued for it still lands, but its type's cells went with
+/// the instance that made them. The cycle that delivers that write is
+/// logged and its watches looked at without reading the type, and the
+/// program computes what it computes alone.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_deleted_instances_binding_is_survived() -> Result<()> {
+    const PROGRAM: &str = r#"
+let go: i64 = never();
+let a = [1, 2];
+let out = array::map(a, |x| {
+    let v = 0;
+    let r = &mut v;
+    *r <- go ~ x;
+    v
+});
+a <- go ~ [1];
+out
+"#;
+    for mode in Mode::ALL {
+        let rt = run(PROGRAM, mode).await?;
+        let mut s = rt.attach().await?;
+        let slots = s.bindings(Command::Print { target: "v".into() }).await?;
+        let live = slots.iter().filter(|b| b.value.is_some()).count();
+        assert_eq!(live, 2, "{mode:?}: {slots:?}");
+        s.watch("v").await?;
+        // one cycle queues the write to each slot's `v` and the shorter
+        // array; the next deletes the second slot and delivers both,
+        // and the break holds the program after it
+        let held = Command::Break { target: "a".into(), when: proto::When::Value };
+        s.client.request(held).await?;
+        let set = Command::Set { target: "go".into(), value: "7".into() };
+        s.client.request(set).await?;
+        s.client.request(Command::Wait).await?;
+        assert_eq!(s.print("out").await?.value.as_deref(), Some("[1]"), "{mode:?}");
+        assert_eq!(s.print("a").await?.value.as_deref(), Some("[1]"), "{mode:?}");
+        let Reply::Cycles { cycles } =
+            s.client.request(Command::Cycles { last: Some(2) }).await?
+        else {
+            bail!("expected the cycle log")
+        };
+        fn wrote(c: &proto::Cycle) -> Vec<(&str, Option<&str>)> {
+            c.delivered.iter().map(|d| (d.name.as_str(), d.value.as_deref())).collect()
+        }
+        assert_eq!(wrote(&cycles[0]), [("go", Some("7"))], "{mode:?}");
+        let last = wrote(&cycles[1]);
+        assert!(last.contains(&("a", Some("[1]"))), "{mode:?}: {last:?}");
+        assert!(last.contains(&("v", Some("1"))), "{mode:?}: {last:?}");
+        assert!(!last.contains(&("v", Some("2"))), "{mode:?}: {last:?}");
+        let slots = s.bindings(Command::Print { target: "v".into() }).await?;
+        let live = slots.iter().filter_map(|b| b.value.as_deref()).collect::<Vec<_>>();
+        assert_eq!(live, ["1"], "{mode:?}: {slots:?}");
+        s.close().await?;
+        rt.shutdown().await
+    }
+    Ok(())
+}
+
 /// A held program runs no cycle of its own: what its embedder writes
 /// waits, a session still asks and evaluates, a step runs one cycle of
 /// work and says what it delivered, and a break holds the program at the

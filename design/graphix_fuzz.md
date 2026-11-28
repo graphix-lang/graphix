@@ -219,7 +219,8 @@ differently, or where the tier is `FinalValues`, `Kind` for an
 dispatch settle in a segment of their own, set aside, so each dispatch
 epoch anchors at its dispatch). In order: the
 engines; a callable's dispatch engines and route pair; each engine's
-sessions; the forked runs; the pruned node-walk. The runs are made as the list reaches them,
+sessions; the forked runs; the pruned node-walk; each engine's watched
+run. The runs are made as the list reaches them,
 a group at a time, and shared. A batch child's first pass agrees only
 when every comparison agrees at once and no run timed out or failed;
 anything else is a suspect. The individual check takes each comparison
@@ -334,6 +335,18 @@ it to the memory-sized worker count).
 node-walk (the default), made with the engines; a skipped boundary that
 changed the trace is a divergence (`design/walk_pruning.md`). Every
 other run prunes as `GRAPHIX_PRUNE` says, on by default.
+
+**Watched runs** (`Pair::Watched(mode)`, `Session::Watched`,
+`watched.rs`): each engine's run alone is the reference for the same run
+with a debugger session attached (`design/debugger.md`). The program
+starts held; the session lists every binding its author wrote, watches
+each, and lets it run, so every cycle keeps the log, looks at every
+watch and tells the session, which prints each event for its client. The
+session asks nothing more: a request starts a cycle, and the trace
+counts them. A watched trace that differs is a divergence (the debugger
+changed the program), and so is a session whose service or client ended
+by an error or a panic. A fused program keeps few bindings, so the JIT's
+watched run mostly holds the log and the hold to nothing changing.
 
 **`selfcheck` is the oracle-soundness gate**: interp-vs-interp and
 jit-vs-jit trace equality over generated + corpus programs, 100%
@@ -494,7 +507,7 @@ matrix: engine pairs per route, each at the program's tier, then the
 route pair, the one comparison held to final values whatever the tier
 (the routes pace a program differently, `Strength::of`). `Divergence`
 carries which pair (`Pair`: the comparisons `Engine`, `EngineDispatch`,
-`Route`, `Cold`, `Warm`, `Par` and `Prune`, and the findings `Twin`, `Check`, `Rejected` and
+`Route`, `Cold`, `Warm`, `Par`, `Prune` and `Watched`, and the findings `Twin`, `Check`, `Rejected` and
 `Accepted`). Callable
 programs batch like any other and never enter the mutation ring.
 

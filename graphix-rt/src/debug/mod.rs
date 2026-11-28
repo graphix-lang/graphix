@@ -13,8 +13,8 @@ pub use client::Client;
 use crate::{
     CompExp, CompRes, GXExt, GXHandle, ToGX,
     gx::debug::{
-        Fired, Fused, Held, Logged, Op, Paused, State, Stop, Watching, Why, authored,
-        held,
+        Fired, Fused, Held, Logged, Named, Op, Paused, State, Stop, Watching, Why,
+        authored, held,
     },
 };
 use anyhow::{Context, Result, anyhow, bail};
@@ -355,7 +355,7 @@ fn resolve(env: &Env, target: &str) -> Result<LPooled<Vec<Arc<Bind>>>> {
 fn listed(env: &Env, b: &Bind, scope: Option<&str>) -> bool {
     authored(env, b)
         && match scope {
-            None => !matches!(b.ori.source, Source::Vfs(_)),
+            None => true,
             Some(s) if s.contains(['.', '/', '\\']) => in_file(&b.ori, s),
             Some(s) => {
                 let module = ModPath::from_iter(s.split("::"));
@@ -503,8 +503,8 @@ impl<X: GXExt, W: AsyncWrite + Unpin> Session<X, W> {
             }
             Fired::Watch { watch, bind, cycle, value } => proto::Event::Fired {
                 watch,
-                binding: handle(bind.id),
-                name: bind.name.clone(),
+                binding: handle(bind.id()),
+                name: bind.name().clone(),
                 cycle,
                 value: value.map(|v| printed(&self.env, &bind.typ, &v)),
             },
@@ -523,9 +523,9 @@ impl<X: GXExt, W: AsyncWrite + Unpin> Session<X, W> {
     }
 
     fn cycle(&self, l: &Logged) -> proto::Cycle {
-        let delivered = |(b, v): &(Arc<Bind>, Option<Value>)| proto::Delivered {
-            binding: handle(b.id),
-            name: b.name.clone(),
+        let delivered = |(b, v): &(Named, Option<Value>)| proto::Delivered {
+            binding: handle(b.id()),
+            name: b.name().clone(),
             value: v.as_ref().map(|v| printed(&self.env, &b.typ, v)),
         };
         proto::Cycle {
@@ -538,12 +538,12 @@ impl<X: GXExt, W: AsyncWrite + Unpin> Session<X, W> {
     fn binding(&self, h: &Held) -> proto::Binding {
         let b = &h.bind;
         proto::Binding {
-            id: handle(b.id),
-            name: b.name.clone(),
-            scope: format_compact!("{}", b.scope).as_str().into(),
-            file: file_of(&b.ori),
-            line: b.pos.line,
-            column: b.pos.column,
+            id: handle(b.id()),
+            name: b.name().clone(),
+            scope: format_compact!("{}", b.scope()).as_str().into(),
+            file: file_of(b.ori()),
+            line: b.pos().line,
+            column: b.pos().column,
             typ: (self.show)(&b.typ).as_str().into(),
             value: h.value.as_ref().map(|v| printed(&self.env, &b.typ, v)),
             written: h.written,
@@ -698,7 +698,11 @@ impl<X: GXExt, W: AsyncWrite + Unpin> Session<X, W> {
         let target = CompactString::from(target);
         let read = self.attached.gx.with_ctx(move |ctx| -> Result<_> {
             let binds = resolve(&ctx.env, &target)?;
-            let held = binds.iter().map(|b| held(ctx, b)).collect::<LPooled<Vec<_>>>();
+            let held: LPooled<Vec<_>> =
+                binds.iter().filter_map(|b| held(ctx, b)).collect();
+            if held.is_empty() {
+                bail!("the program has deleted what {target} names")
+            }
             Ok((ctx.env.clone(), held))
         });
         let (env, held) = read.await??;
@@ -793,7 +797,7 @@ impl<X: GXExt, W: AsyncWrite + Unpin> Session<X, W> {
         if held.len() > WATCHED {
             bail!("{target} names {} bindings, and a watch covers {WATCHED}", held.len())
         }
-        let ids = held.iter().map(|h| h.bind.id).collect();
+        let ids = held.iter().map(|h| h.bind.id()).collect();
         let gx = self.attached.gx.clone();
         let watch = gx.exec(|res| ToGX::Debug(Op::Watch { ids, stop, res })).await?;
         let bindings = held.iter().map(|h| self.binding(h)).collect();
@@ -876,7 +880,10 @@ impl<X: GXExt, W: AsyncWrite + Unpin> Session<X, W> {
                     for b in binds.iter() {
                         match (last, rows.last_mut()) {
                             (Some(l), Some((_, n))) if same_place(l, b) => *n += 1,
-                            _ => rows.push((held(ctx, b), 1)),
+                            _ => match held(ctx, b) {
+                                Some(h) => rows.push((h, 1)),
+                                None => continue,
+                            },
                         }
                         last = Some(b)
                     }
@@ -898,10 +905,10 @@ impl<X: GXExt, W: AsyncWrite + Unpin> Session<X, W> {
                 let (typ, tested) = (h.bind.typ.clone(), v.clone());
                 if !gx.with_ctx(move |ctx| typ.is_a(&ctx.env, &tested)).await? {
                     let typ = (self.show)(&h.bind.typ);
-                    bail!("{shown} is not a {typ}: {} is not set", h.bind.name)
+                    bail!("{shown} is not a {typ}: {} is not set", h.bind.name())
                 }
                 let token = self.token();
-                self.attached.op(Op::Write { session, id: h.bind.id, v, token })?;
+                self.attached.op(Op::Write { session, id: h.bind.id(), v, token })?;
                 let (_, held) = self.until_cycled(token, None).await?;
                 Ok(Reply::Set { binding: self.binding(&h), value: shown, held })
             }
@@ -946,7 +953,7 @@ impl<X: GXExt, W: AsyncWrite + Unpin> Session<X, W> {
                 }
             }
             Command::Why { target } => {
-                let id = self.one(&target).await?.bind.id;
+                let id = self.one(&target).await?.bind.id();
                 let why = gx.exec(|res| ToGX::Debug(Op::Why { id, res })).await?;
                 let why = why.ok_or_else(|| anyhow!("{target} is gone"))?;
                 Ok(Reply::Why { why: self.why(&why) })
@@ -964,8 +971,8 @@ impl<X: GXExt, W: AsyncWrite + Unpin> Session<X, W> {
                 self.env = gx.get_env().await?;
                 let watching = |w: &Watching| proto::Watching {
                     watch: w.n,
-                    binding: handle(w.bind.id),
-                    name: w.bind.name.clone(),
+                    binding: handle(w.bind.id()),
+                    name: w.bind.name().clone(),
                     breaks: w.stop.as_ref().map(|s| match s {
                         Stop::Fires => When::Value,
                         Stop::NoValue => When::NoValue,

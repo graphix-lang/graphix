@@ -18,6 +18,7 @@ pub mod mutate;
 pub mod schedule;
 pub mod trace;
 pub mod typemorph;
+mod watched;
 
 use ahash::AHashMap;
 use arcstr::ArcStr;
@@ -542,6 +543,7 @@ async fn start_session(
     program: Option<graphix_compiler::expr::Load>,
     program_image: Option<oneshot::Sender<anyhow::Result<graphix_rt::ProgramImage>>>,
     limits: Limits,
+    held: bool,
     timeout: Duration,
 ) -> Result<Started, Outcome> {
     let (tx, rx) = mpsc::channel(64);
@@ -553,7 +555,7 @@ async fn start_session(
         ctx.libstate.set(exit_req);
     });
     let init = async move {
-        let mut cfg = cfg?;
+        let mut cfg = cfg?.paused(held);
         if let Some(p) = program {
             cfg = cfg.program(p);
         }
@@ -1362,6 +1364,9 @@ pub enum Session {
     NoCache,
     Cold,
     Warm,
+    /// No cache, with a debugger session attached that watches every
+    /// binding the program wrote ([`watched`]).
+    Watched,
 }
 
 impl Session {
@@ -1370,6 +1375,7 @@ impl Session {
             Session::NoCache => "nocache",
             Session::Cold => "cold",
             Session::Warm => "warm",
+            Session::Watched => "watched",
         }
     }
 }
@@ -1482,7 +1488,7 @@ async fn run_subject(
     timeout: Duration,
     opts: RunOpts,
 ) -> SubjectRun {
-    let RunOpts { stats, activations, watch_progress } = opts;
+    let RunOpts { stats, activations, watch_progress, watched } = opts;
     let subj = match Subject::parse(code, "test") {
         Ok(s) => s,
         Err(e) => return SubjectRun::failed(Outcome::CompileErr(e)),
@@ -1507,12 +1513,26 @@ async fn run_subject(
         program,
         program_image,
         limits,
+        watched,
         timeout,
     )
     .await
     {
         Ok(s) => s,
         Err(o) => return SubjectRun::failed(o),
+    };
+    // held before its first cycle where watched, and let run once the
+    // session watches it
+    let watcher = match watched {
+        false => None,
+        true => match watched::watch_all(&ctx.rt).await {
+            Ok(w) => Some(w),
+            Err(e) => {
+                return SubjectRun::failed(Outcome::RuntimeErr(format!(
+                    "debugger: {e:#}"
+                )));
+            }
+        },
     };
     let drive = drive(&ctx, &mut rx, &mut exit, &subj, route, timeout, &sink);
     let (outcome, still) = match watch_progress {
@@ -1534,6 +1554,13 @@ async fn run_subject(
             };
             (o, still)
         }
+    };
+    let outcome = match watcher {
+        None => outcome,
+        Some(w) => match w.failed(matches!(outcome, Outcome::Trace(_))).await {
+            None => outcome,
+            Some(e) => Outcome::RuntimeErr(format!("debugger: {e}")),
+        },
     };
     let stalled = still && matches!(outcome, Outcome::Timeout(Containment::Deadline));
     // A wedged runtime never answers another request: abort first, then
@@ -1574,6 +1601,9 @@ struct RunOpts {
     /// Note whether a run that timed out started no cycle over the second
     /// half of its budget, its last twentieth aside ([`SubjectRun::stalled`]).
     watch_progress: bool,
+    /// Attach a debugger session that watches every binding the program
+    /// wrote ([`Session::Watched`]).
+    watched: bool,
 }
 
 /// [`run_subject`] for the image axis: the outcome and the image a
@@ -1743,6 +1773,10 @@ pub enum Pair {
     /// node-walk (`tested`): skipping a boundary changed the program
     /// (`design/walk_pruning.md`).
     Prune,
+    /// A run alone (`reference`) vs the same with a debugger session
+    /// attached that watches every binding the program wrote (`tested`):
+    /// the debugger changed the program (`design/debugger.md`).
+    Watched(Mode),
     /// A corpus pin that no longer parses (`reference` and `tested` both
     /// hold the parse error): it pins nothing.
     Unparsed,
@@ -1809,6 +1843,10 @@ impl Divergence {
             }
             (Pair::Prune, _) => {
                 "walk pruning bug (pruned node-walk != unpruned node-walk)"
+            }
+            (Pair::Watched(_), _) => {
+                "the debugger changed the program (a run a session watches != the run \
+                     alone)"
             }
             (Pair::Unparsed, _) => {
                 "corpus pin does not parse (whatever it was refused for once, it pins \
@@ -2061,6 +2099,7 @@ impl Run {
             "NoCache" => Session::NoCache,
             "Cold" => Session::Cold,
             "Warm" => Session::Warm,
+            "Watched" => Session::Watched,
             _ => return None,
         };
         Some(Run { mode, route, session })
@@ -2096,6 +2135,10 @@ impl Pair {
             Pair::Construction => ("construction", "construction"),
             Pair::Unparsed => ("parse", "parse"),
             Pair::Par(m) => (mode_label(Mode::Interp), mode_label(m)),
+            Pair::Watched(m) => {
+                let watched = session_label(m, Route::InLanguage, Session::Watched);
+                return (mode_label(m).into(), watched);
+            }
             Pair::Cold(m, r) => {
                 return (
                     session_label(m, r, Session::NoCache),
@@ -2125,6 +2168,7 @@ impl Pair {
             Pair::Route => (Run::plain(Mode::Interp, i), Run::plain(Mode::Interp, j)),
             Pair::Par(m) => (Run::plain(Mode::Interp, i), Run::plain(m, i)),
             Pair::Prune => (Run::plain(Mode::Unpruned, i), Run::plain(Mode::Interp, i)),
+            Pair::Watched(m) => (Run::plain(m, i), session(m, i, Session::Watched)),
             Pair::Cold(m, r) => (Run::plain(m, r), session(m, r, Session::Cold)),
             Pair::Warm(m, r) => {
                 (session(m, r, Session::Cold), session(m, r, Session::Warm))
@@ -2147,6 +2191,7 @@ impl Pair {
             Pair::Cold(_, Route::InLanguage) | Pair::Warm(_, Route::InLanguage) => 1,
             Pair::Cold(_, Route::Dispatch) | Pair::Warm(_, Route::Dispatch) => 2,
             Pair::Par(_) => 3,
+            Pair::Watched(_) => 4,
             _ => 0,
         }
     }
@@ -2155,8 +2200,8 @@ impl Pair {
 /// Every comparison a subject owes, in the order they are judged: the
 /// engines, then (a callable) the dispatch route's engines and the route
 /// pair, then each engine's image sessions (the forked JIT's included),
-/// then the forked runs. A
-/// program whose values are not comparable owes them all at kind
+/// then the forked runs, the unpruned walk and each engine's watched
+/// run. A program whose values are not comparable owes them all at kind
 /// strength.
 fn comparisons(code: &str, sessions: bool) -> Vec<Pair> {
     // an Excluded program still owes every comparison of outcome kinds
@@ -2178,6 +2223,7 @@ fn comparisons(code: &str, sessions: bool) -> Vec<Pair> {
         out.extend([Pair::Par(Mode::Par), Pair::Par(Mode::JitPar)]);
     }
     out.push(Pair::Prune);
+    out.extend([Pair::Watched(Mode::Interp), Pair::Watched(Mode::Jit)]);
     out
 }
 
@@ -2198,6 +2244,7 @@ async fn do_job(
     match job {
         Job::Plain(r) => {
             log_run("RUN", r);
+            let opts = RunOpts { watched: r.session == Session::Watched, ..opts };
             let o = run_subject(code, r.mode, r.route, SessionImage::None, timeout, opts)
                 .await
                 .outcome;
@@ -2266,6 +2313,12 @@ async fn run_one(code: &str, run: Run, budget: Duration) -> Outcome {
 async fn run_one_inner(code: &str, run: Run, budget: Duration) -> Outcome {
     match run.session {
         Session::NoCache => run_program_routed(code, run.mode, run.route, budget).await,
+        Session::Watched => {
+            let opts = RunOpts { watched: true, ..RunOpts::default() };
+            run_subject(code, run.mode, run.route, SessionImage::None, budget, opts)
+                .await
+                .outcome
+        }
         Session::Cold => {
             let opts = RunOpts::default();
             run_session(code, run.mode, run.route, SessionImage::Write, budget, opts)
@@ -2331,7 +2384,7 @@ impl<'a> Oracle<'a> {
     /// since the warm run restores what the cold one wrote.
     async fn remake(&mut self, run: Run, budget: Duration) {
         let job = match run.session {
-            Session::NoCache => Job::Plain(run),
+            Session::NoCache | Session::Watched => Job::Plain(run),
             Session::Cold | Session::Warm => Job::Sessions(run.mode, run.route),
         };
         for (r, o) in do_job(self.code, job, budget, self.opts()).await {
@@ -2345,7 +2398,7 @@ impl<'a> Oracle<'a> {
     /// timed out inside one cycle, else `None`.
     async fn stalled(&self, run: Run, budget: Duration) -> Option<Outcome> {
         let image = match run.session {
-            Session::NoCache => SessionImage::None,
+            Session::NoCache | Session::Watched => SessionImage::None,
             Session::Cold => SessionImage::Write,
             Session::Warm => {
                 let opts = self.opts();
@@ -2361,7 +2414,8 @@ impl<'a> Oracle<'a> {
                 SessionImage::Read(restorable(&cold, image).ok()?)
             }
         };
-        let opts = RunOpts { watch_progress: true, ..self.opts() };
+        let watched = run.session == Session::Watched;
+        let opts = RunOpts { watch_progress: true, watched, ..self.opts() };
         let probe =
             run_subject(self.code, run.mode, run.route, image, budget, opts).await;
         probe.stalled.then_some(probe.outcome)
@@ -2376,7 +2430,7 @@ impl<'a> Oracle<'a> {
                     continue;
                 }
                 let job = match r.session {
-                    Session::NoCache => Job::Plain(r),
+                    Session::NoCache | Session::Watched => Job::Plain(r),
                     Session::Cold | Session::Warm => Job::Sessions(r.mode, r.route),
                 };
                 let same = |j: &Job| match (j, &job) {
@@ -7259,6 +7313,25 @@ mod tests {
         .await
         .outcome;
         assert!(matches!(o, Outcome::Timeout(Containment::ActivationBudget)), "{o:?}");
+    }
+
+    /// Each engine's watched run is owed, runs to a trace (a session that
+    /// found no binding to watch fails a run that traced), and agrees
+    /// with the run alone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_watched_run_agrees_with_the_run_alone() {
+        let code = "{ let x = i64:41; let y = x + i64:1; y }";
+        let budget = Duration::from_secs(60);
+        let opts = RunOpts { watched: true, ..RunOpts::default() };
+        let (i, none) = (Route::InLanguage, SessionImage::None);
+        let watched = run_subject(code, Mode::Interp, i, none, budget, opts).await;
+        assert!(matches!(watched.outcome, Outcome::Trace(_)), "{:?}", watched.outcome);
+        let pairs = comparisons(code, false);
+        for mode in [Mode::Interp, Mode::Jit] {
+            assert!(pairs.contains(&Pair::Watched(mode)), "{pairs:?}")
+        }
+        let (d, _) = judged(code, budget, None).await;
+        assert!(d.is_none(), "{d:?}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
