@@ -668,7 +668,8 @@ accepts, apply an acceptance-preserving `Expr → Expr` transform, print
 it back, check again; accept→reject is a flip. Transforms are graded,
 and the grade is the triage default: parens-wrap and label-permute
 (rotate a call's labeled arguments, which bind by name) are SOUND (a
-flip is a compiler bug); block-wrap (`e` → `{ let tm__0 = e; tm__0 }`,
+flip is a compiler bug); no wrap takes an `await(e)`, a step of its seq
+that is the whole of a statement's value, as an `until` is; block-wrap (`e` → `{ let tm__0 = e; tm__0 }`,
 not on lambda literals (let-extract's probe) or data that holds one, which
 a `let` makes a definition checked where it closes, or blocks, nor on
 `never()`: a `let` over ⊥ is an open cell its writers type, where the

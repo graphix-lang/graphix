@@ -527,7 +527,9 @@ fn value_pos(k: &ExprKind) -> bool {
         | ExprKind::Connect { .. }
         | ExprKind::Catch(_)
         | ExprKind::Until(_)
-        | ExprKind::TryWith(_) => false,
+        | ExprKind::TryWith(_)
+        // a step of its seq: the whole of a statement's value, nothing inside one
+        | ExprKind::Await(_) => false,
         // a seq's statement group may end in a `let`, and has no value then
         ExprKind::Block { exprs } => exprs.last().is_none_or(|e| value_pos(&e.kind)),
         _ => true,

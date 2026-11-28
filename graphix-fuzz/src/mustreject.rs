@@ -1723,9 +1723,9 @@ fn writes(stmts: &[Expr], v: &str) -> bool {
 /// writes `v` (until a statement binds the name to a value not built from
 /// it; one that may, a module, hides nothing for sure), a `let` built
 /// from it, or what
-/// a connect relates to it (its target, and a cell it reads, which the connect
-/// decides): a change to `v`'s type meets all of them, and the checker reports
-/// whichever it reaches first.
+/// a connect anywhere in such a statement relates to it (its target, and a
+/// cell it reads, which the connect decides): a change to `v`'s type meets
+/// all of them, and the checker reports whichever it reaches first.
 fn affected_stmts(stmts: &[Expr], si: usize, v: &str) -> Vec<usize> {
     let mut affected: Vec<CompactString> = vec![v.into()];
     let mut sites = vec![si];
@@ -1749,20 +1749,24 @@ fn affected_stmts(stmts: &[Expr], si: usize, v: &str) -> Vec<usize> {
         }
         if mentions {
             sites.push(k);
-            match &later.kind {
-                ExprKind::Bind(lb) => {
-                    lb.pattern.with_names(&mut |n| affected.push(n.as_str().into()))
-                }
-                ExprKind::Connect { name, value, .. } => {
-                    affected.push(name.to_string().into());
-                    value.fold((), &mut |(), n| {
-                        if let ExprKind::Ref { name } = &n.kind {
-                            affected.push(name.to_string().into());
-                        }
-                    });
-                }
-                _ => (),
+            if let ExprKind::Bind(lb) = &later.kind {
+                lb.pattern.with_names(&mut |n| affected.push(n.as_str().into()))
             }
+            // a connect anywhere in the statement (an `on` block's, an arm's)
+            let mut related: Vec<CompactString> = Vec::new();
+            later.fold((), &mut |(), n| {
+                let ExprKind::Connect { name, value, .. } = &n.kind else { return };
+                let mut names: Vec<CompactString> = vec![name.to_string().into()];
+                value.fold((), &mut |(), n| {
+                    if let ExprKind::Ref { name } = &n.kind {
+                        names.push(name.to_string().into())
+                    }
+                });
+                if names.iter().any(|n| affected.contains(n)) {
+                    related.extend(names)
+                }
+            });
+            affected.extend(related)
         }
     }
     sites
