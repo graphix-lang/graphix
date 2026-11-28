@@ -1379,6 +1379,60 @@ run!(
     FuseExpect::None
 );
 
+// A cell is given its type after the cells that flow into it: a `let`
+// that names a pattern's bind before an operator reads it is no infinite
+// type. The arithmetic's one type and the comparison's operands wait for
+// the bind's.
+run!(
+    a_let_of_a_pattern_bind_feeds_arithmetic,
+    "{ let a = never(); \
+     let r = select a { ((x, y), z) if x == 5 => { let t = x; t } + y + z, _ => 0 }; 1 }",
+    is(Value::I64(1))
+);
+
+run!(
+    a_let_of_a_pattern_bind_feeds_a_comparison,
+    "{ |best, x| select best { \
+       null as _ => x, \
+       i64 as b => select x < { let t = b; t } { true => x, false => b } }; 1 }",
+    is(Value::I64(1))
+);
+
+// The same function checks as it does called: its bind is the call's.
+run!(
+    a_let_of_a_pattern_bind_is_the_calls_type,
+    "{ let f = |a| select a { (x, y) if x == 5 => { let t = x; t } + y, _ => 0 }; f((5, 1)) }",
+    is(Value::I64(6))
+);
+
+run!(
+    a_let_of_a_pattern_bind_refuses_another_type,
+    "{ let f = |a| select a { (x, y) if x == 5 => { let t = x; t } + y, _ => 0 }; \
+     f((\"s\", 1)) }",
+    refused("type mismatch Number does not contain string");
+    FuseExpect::None
+);
+
+// A function nothing calls, whose parameter no finite type fits, is a
+// function no call can be made of, bound by a `let` or not and however
+// its body names the parameter. A call of it is refused.
+run!(
+    an_uncalled_function_of_no_finite_parameter_checks,
+    "{ (|x| { let inp = x; \
+       let inner = select true { true => { let x = inp; let y = inp; (x, y) }, \
+                                 false => (0, 0) }; \
+       x(inner) }); \
+     (|x| { let t = x; x([t]) }); 1 }",
+    is(Value::I64(1))
+);
+
+run!(
+    a_call_of_a_function_of_no_finite_parameter_is_refused,
+    "{ (|x| { let t = x; x([t]) })(|y| 0); 1 }",
+    refused("infinite type: a variable holds itself in Array<");
+    FuseExpect::None
+);
+
 // `'r ⊇ [T.., 'r]` binds `'r := [T..]`: a result that is a union of
 // two constructors is the whole union, never its first member.
 const REC_UNION_RESULT_OF_A_PARAM: &str = r#"

@@ -821,10 +821,10 @@ pub struct Solving {
     /// fixed around it: the source and the cell, checked once both are
     /// fixed ([`Self::fix`]).
     cycles: Vec<(TVar, TVar)>,
-    /// A cell being fixed and one that holds nothing else, left open
-    /// when it was met inside the first's fixing: it is what the first
-    /// becomes ([`Self::fix`]).
-    after: Vec<(TVar, TVar)>,
+    /// A cell being fixed and one it flows into, left open when it was
+    /// met inside the first's fixing and fixed once the first is, as its
+    /// [`Follow`] says ([`Self::fix`]).
+    after: Vec<(TVar, TVar, Follow)>,
     /// What a definition asked of a type its variables decide, which
     /// this instance of it judges: the type, the predicates and the name
     /// of the variable they bound.
@@ -5594,6 +5594,44 @@ impl Solving {
         Ok(self.held.len() == n)
     }
 
+    /// Leave `w` open to follow `of`, a cell being fixed ([`Self::after`]).
+    fn follow(&mut self, of: TVar, w: &TVar, how: Follow) {
+        debug(|| format!("'{} {how:?} '{}", ShortName(&w.name), ShortName(&of.name)));
+        if !self.after.iter().any(|(o, x, _)| o.same_cell(&of) && x.same_cell(w)) {
+            self.after.push((of, w.clone(), how))
+        }
+    }
+
+    /// Whether `w` was left open to be fixed again once `v` is
+    /// ([`Follow::Again`]).
+    fn fixed_again_after(&self, w: &TVar, v: &TVar) -> bool {
+        self.after.iter().any(|(of, x, how)| {
+            matches!(how, Follow::Again) && of.same_cell(v) && x.same_cell(w)
+        })
+    }
+
+    /// Whether `u` was left open to follow a cell that is being fixed
+    /// ([`Self::after`]), other than `v` and not through it: that cell's
+    /// fixing, in progress, gives `u` its type.
+    fn follows_one_being_fixed(&self, u: &TVar, v: &TVar) -> bool {
+        let mut seen: SmallVec<[usize; 4]> =
+            SmallVec::from_iter([u.cell_addr(), v.cell_addr()]);
+        let mut work: SmallVec<[TVar; 2]> = SmallVec::from_iter([u.clone()]);
+        while let Some(u) = work.pop() {
+            for (of, w, _) in self.after.iter() {
+                if !w.same_cell(&u) || seen.contains(&of.cell_addr()) {
+                    continue;
+                }
+                if self.fixing.contains(&of.cell_addr()) {
+                    return true;
+                }
+                seen.push(of.cell_addr());
+                work.push(of.clone())
+            }
+        }
+        false
+    }
+
     /// Give `v` one type: the union of what flows into it, or, where
     /// nothing does, the narrowest of what its uses demand.
     fn fix(&mut self, env: &Env, v: &TVar) -> Result<()> {
@@ -5647,6 +5685,7 @@ impl Solving {
         super::tvar::prove_ground_by_parts(v);
         let judged = |c: &Type| matches!(c, Type::Bound(_)) || c.is_trait_ref(env);
         let mut followed: SmallVec<[TVar; 2]> = SmallVec::from_iter([v.clone()]);
+        let mut again: SmallVec<[TVar; 2]> = SmallVec::new();
         while let Some(of) = followed.pop() {
             let mut i = 0;
             while i < self.after.len() {
@@ -5654,8 +5693,12 @@ impl Solving {
                     i += 1;
                     continue;
                 }
-                let (_, w) = self.after.swap_remove(i);
+                let (_, w, follow) = self.after.swap_remove(i);
                 if w.is_bound() {
+                    continue;
+                }
+                if let Follow::Again = follow {
+                    again.push(w);
                     continue;
                 }
                 debug(|| format!("fix '{} := {r}", ShortName(&w.name)));
@@ -5667,6 +5710,7 @@ impl Solving {
                 followed.push(w)
             }
         }
+        again.iter().try_for_each(|w| self.fix(env, w))?;
         // a flow from a cell that was being fixed around this one was
         // left out: what that cell is now fits here, or no finite type
         // holds both
@@ -6014,6 +6058,7 @@ impl Solving {
         // a cell nothing has decided may stay open inside a bound: a
         // holder that shares it can still decide it
         let mut flows: SmallVec<[Type; 4]> = SmallVec::new();
+        let mut around: Option<TVar> = None;
         let fed = feeders(v).into_iter().filter(|u| !quantified(u)).map(Type::TVar);
         for l in v.cell_lower().into_iter().chain(fed) {
             match self.settled(env, &l)? {
@@ -6034,7 +6079,8 @@ impl Solving {
                                 Some(t) => flows.push(t),
                             }
                         }
-                        self.cycles.push((u.clone(), v.clone()))
+                        self.cycles.push((u.clone(), v.clone()));
+                        around.get_or_insert_with(|| u.clone());
                     } else if let Some(u) = open(&shallow(&l)) {
                         open_below.push(u.clone())
                     }
@@ -6075,6 +6121,12 @@ impl Solving {
                     // the demand's head; the cells under it are fixed, and
                     // stand for their types without being copied out
                     let u = shallow(&u);
+                    // one left to be fixed again after this cell holds
+                    // nothing else: it asks what a cell fixed at bottom does
+                    let u = match &u {
+                        Type::TVar(w) if self.fixed_again_after(w, v) => Type::Bottom,
+                        _ => u,
+                    };
                     if let Type::TVar(w) = &u
                         && (w.is_rigid() || quantified(w))
                         && !variables.iter().any(|x| x.same_cell(w))
@@ -6168,7 +6220,7 @@ impl Solving {
                         match self.held_below(env, v, made)? {
                             Held::Is(t) => t,
                             Held::After(around) => {
-                                self.after.push((around, v.clone()));
+                                self.follow(around, v, Follow::Becomes);
                                 return Ok(None);
                             }
                         }
@@ -6192,6 +6244,14 @@ impl Solving {
                 }
             }
         };
+        // nothing decided it, and a cell being fixed around it flows into
+        // it: it is fixed again once that cell is
+        if matches!(t, Type::Bottom)
+            && let Some(u) = around
+        {
+            self.follow(u, v, Follow::Again);
+            return Ok(None);
+        }
         let one = one_type(env, &t)?;
         if single && !matches!(t, Type::Bottom) && !one {
             // a declared variable is one type where its signature says so
@@ -6249,6 +6309,18 @@ impl Solving {
             if !matches!(t, Type::Bottom | Type::TVar(_)) {
                 held.push(t)
             }
+        }
+        // the one cell below it was left open to follow a cell being
+        // fixed: no type is known for it yet, and `v` follows it
+        if let ([], [one]) = (&around[..], &apart[..])
+            && held.is_empty()
+            && !one.is_bound()
+            && self.follows_one_being_fixed(one, v)
+        {
+            return Ok(match made {
+                true => Held::Is(Type::TVar(one.clone())),
+                false => Held::After(one.clone()),
+            });
         }
         Ok(Held::Is(match &mut held[..] {
             [] => Type::Bottom,
@@ -6369,6 +6441,16 @@ impl Solving {
             }
         }
     }
+}
+
+/// How a cell left open inside another's fixing is fixed once that one is.
+#[derive(Debug, Clone, Copy)]
+enum Follow {
+    /// It holds nothing else: it is what the other becomes.
+    Becomes,
+    /// Nothing decided it: it is fixed again, the other now among what
+    /// flows into it.
+    Again,
 }
 
 /// What [`Solving::held_below`] finds a cell to be.
