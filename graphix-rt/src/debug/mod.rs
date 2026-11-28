@@ -48,7 +48,7 @@ use tokio::{
         Lines,
     },
     select,
-    sync::mpsc::{self, UnboundedReceiver},
+    sync::mpsc::{self, UnboundedReceiver, UnboundedSender},
 };
 use triomphe::Arc;
 
@@ -75,17 +75,31 @@ pub struct Debugger<X: GXExt> {
     /// long as the debugger: a later session reads what an earlier one
     /// bound.
     kept: Arc<Mutex<Vec<CompExp<X>>>>,
+    /// What the embedder calls the program ([`Self::named`]).
+    name: Option<ArcStr>,
 }
 
 impl<X: GXExt> Clone for Debugger<X> {
     fn clone(&self) -> Self {
-        Self { gx: self.gx.clone(), show: self.show, kept: self.kept.clone() }
+        Self {
+            gx: self.gx.clone(),
+            show: self.show,
+            kept: self.kept.clone(),
+            name: self.name.clone(),
+        }
     }
 }
 
 impl<X: GXExt> Debugger<X> {
     pub fn new(gx: GXHandle<X>) -> Self {
-        Self { gx, show: show_type, kept: Arc::new(Mutex::new(Vec::new())) }
+        Self { gx, show: show_type, kept: Arc::new(Mutex::new(Vec::new())), name: None }
+    }
+
+    /// Say `name` of the program in each session's hello, beside its
+    /// process id and directory: what a client tells it from the other
+    /// programs on the machine by.
+    pub fn named(self, name: ArcStr) -> Self {
+        Self { name: Some(name), ..self }
     }
 
     /// Show types as `show` prints them.
@@ -105,10 +119,15 @@ impl<X: GXExt> Debugger<X> {
         let mut lines = BufReader::new(rd).lines();
         let (tx, events) = mpsc::unbounded_channel();
         let attached = Attached { gx: self.gx.clone(), id: SessionId::new() };
-        attached.op(Op::Attach { session: attached.id, events: tx })?;
-        let env = self.gx.get_env().await?;
+        let cwd = std::env::current_dir().ok();
+        let program = proto::Program {
+            pid: std::process::id(),
+            cwd: cwd.map(|d| format_compact!("{}", d.display()).as_str().into()),
+            name: self.name.clone(),
+        };
         let mut session = Session {
             attached,
+            joining: Some(tx),
             show: self.show,
             out,
             events,
@@ -117,9 +136,9 @@ impl<X: GXExt> Debugger<X> {
             made: 0,
             tokens: 0,
             waits: SmallVec::new(),
-            env,
+            env: Env::default(),
         };
-        session.run(&mut lines).await
+        session.run(&mut lines, program).await
     }
 
     /// Serve every connection `listener` accepts, each a session, until
@@ -203,6 +222,9 @@ struct Shown<X: GXExt> {
 
 struct Session<X: GXExt, W> {
     attached: Attached<X>,
+    /// Where the runtime will tell this session things, until its first
+    /// request, which attaches it.
+    joining: Option<UnboundedSender<Fired>>,
     show: ShowType,
     out: W,
     events: UnboundedReceiver<Fired>,
@@ -404,8 +426,13 @@ impl<X: GXExt, W: AsyncWrite + Unpin> Session<X, W> {
         Ok(self.out.flush().await?)
     }
 
-    async fn run<R: AsyncBufRead + Unpin>(&mut self, lines: &mut Lines<R>) -> Result<()> {
-        self.send(&proto::Hello { graphix_debug: proto::VERSION }).await?;
+    async fn run<R: AsyncBufRead + Unpin>(
+        &mut self,
+        lines: &mut Lines<R>,
+        program: proto::Program,
+    ) -> Result<()> {
+        let ours = proto::Hello { graphix_debug: proto::VERSION, program: Some(program) };
+        self.send(&ours).await?;
         let Some(hello) = lines.next_line().await? else { return Ok(()) };
         match serde_json::from_str::<proto::Hello>(&hello) {
             Ok(h) if h.graphix_debug == proto::VERSION => (),
@@ -419,7 +446,7 @@ impl<X: GXExt, W: AsyncWrite + Unpin> Session<X, W> {
                     Some(line) if line.trim().is_empty() => (),
                     Some(line) => {
                         let response = match serde_json::from_str::<Request>(&line) {
-                            Ok(req) => match self.command(req.id, req.cmd).await {
+                            Ok(req) => match self.asked(req.id, req.cmd).await {
                                 // answered when what it waits for happens
                                 Ok(None) => continue,
                                 Ok(Some(reply)) => {
@@ -771,6 +798,17 @@ impl<X: GXExt, W: AsyncWrite + Unpin> Session<X, W> {
         let watch = gx.exec(|res| ToGX::Debug(Op::Watch { ids, stop, res })).await?;
         let bindings = held.iter().map(|h| self.binding(h)).collect();
         Ok(Reply::Watching { watch, bindings })
+    }
+
+    /// [`Self::command`], once the runtime knows the session: a client
+    /// that only reads the hello, to see which program this is, costs
+    /// the program nothing.
+    async fn asked(&mut self, id: u64, cmd: Command) -> Result<Option<Reply>> {
+        if let Some(events) = self.joining.take() {
+            self.attached.op(Op::Attach { session: self.attached.id, events })?;
+            self.env = self.attached.gx.get_env().await?
+        }
+        self.command(id, cmd).await
     }
 
     /// Answer `cmd`, the request `id`: `None` where the answer is sent

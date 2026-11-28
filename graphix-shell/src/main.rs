@@ -136,8 +136,10 @@ enum Command {
     /// --debug FILE): ask what a binding holds and why, watch it, set
     /// it, and evaluate Graphix in the program. `help` lists the commands
     Debug {
-        /// the socket's path or the program's process id; with neither,
-        /// the one program that offers a debugger
+        /// the program: the file it runs, the directory it runs in, its
+        /// process id or its socket's path. With none, the one program
+        /// that offers a debugger, or of several the one running in this
+        /// directory
         target: Option<String>,
         /// run this command and exit instead of reading commands; may
         /// be given more than once

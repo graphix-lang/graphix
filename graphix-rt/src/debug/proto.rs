@@ -13,6 +13,21 @@ pub const VERSION: u32 = 1;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Hello {
     pub graphix_debug: u32,
+    /// What the service says of the program it debugs, so a client can
+    /// tell one program from another before it asks anything. A client's
+    /// hello has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<Program>,
+}
+
+/// A program that offers its debugger.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Program {
+    pub pid: u32,
+    /// The directory it runs in.
+    pub cwd: Option<ArcStr>,
+    /// What its embedder calls it: for the shell, the file it runs.
+    pub name: Option<ArcStr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

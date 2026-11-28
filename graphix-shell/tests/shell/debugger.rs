@@ -53,6 +53,12 @@ impl Running {
         fs::create_dir_all(dir.join("run")).expect("make the runtime dir");
         let mut cmd = graphix(dir);
         cmd.arg("--no-netidx").args(args).arg(&path);
+        Self::offered(cmd, dir)
+    }
+
+    /// Run `cmd`, a program started with its debugger on, and wait until
+    /// it offers it. `dir` holds the runtime directory its clients use.
+    fn offered(mut cmd: Command, dir: &Path) -> Self {
         cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
         let mut child = cmd.spawn().expect("run graphix");
         let mut stderr = BufReader::new(child.stderr.take().expect("its stderr"));
@@ -434,4 +440,72 @@ fn last_cycle(run: &Running) -> String {
     let logged = run.ask(&["cycles 1"]);
     let number = logged.strip_prefix("cycle ").and_then(|l| l.split(':').next());
     number.unwrap_or_else(|| panic!("no cycle in {logged}")).to_string()
+}
+
+/// Two programs with the same file name, each run in its own directory,
+/// are told apart: with no target `graphix debug` asks the one that runs
+/// in the directory it is run in, and from elsewhere lists them by what
+/// they are and where; a program's file or its directory names it.
+#[test]
+fn programs_in_different_directories_are_told_apart() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = dir.path().canonicalize().expect("the real tempdir");
+    fs::create_dir_all(dir.join("run")).expect("make the runtime dir");
+    let start = |name: &str, x: i64| {
+        let home = dir.join(name);
+        fs::create_dir_all(&home).expect("make the program's directory");
+        let program = format!(
+            "let x = {x};\nlet go = false;\nsys::exit(select go {{ true => go ~ 0, false => \
+             never() }})\n"
+        );
+        fs::write(home.join("main.gx"), program).expect("write the program");
+        let mut cmd = graphix(&dir);
+        cmd.current_dir(&home).args([
+            "--no-netidx",
+            "--no-cache",
+            "--debug",
+            "./main.gx",
+        ]);
+        Running::offered(cmd, &dir)
+    };
+    let (a, b) = (start("a", 1), start("b", 2));
+    let ask = |from: &Path, target: Option<&str>| {
+        let mut cmd = graphix(&dir);
+        cmd.current_dir(from).arg("debug").args(target).args(["-c", "print x"]);
+        let out = common::output(cmd);
+        let said = [&out.stdout[..], &out.stderr[..]].concat();
+        (out.status.success(), String::from_utf8_lossy(&said).into_owned())
+    };
+    for (home, x) in [("a", 1), ("b", 2)] {
+        let from_home = ask(&dir.join(home), None);
+        assert!(from_home.0, "{}", from_home.1);
+        has(&from_home.1, &[&format!("x: i64 = {x}")]);
+        let by_file = ask(&dir, Some(&format!("{home}/main.gx")));
+        has(&by_file.1, &[&format!("x: i64 = {x}")]);
+        let by_directory = ask(&dir, Some(home));
+        has(&by_directory.1, &[&format!("x: i64 = {x}")]);
+    }
+    let (answered, listed) = ask(&dir, None);
+    assert!(!answered, "{listed}");
+    let named = |r: &Running, home: &str| {
+        format!(
+            "graphix debug {}    # main.gx in {}",
+            r.child.id(),
+            dir.join(home).display()
+        )
+    };
+    has(
+        &listed,
+        &[
+            "Error: several programs offer a debugger; name one:",
+            &named(&a, "a"),
+            &named(&b, "b"),
+        ],
+    );
+    // nobody runs there: a script waits for a program to start, at most its limit
+    let mut nobody = graphix(&dir);
+    nobody.current_dir(&dir).args(["debug", "run", "--timeout", "0.2", "-c", "print x"]);
+    let out = common::output(nobody);
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success() && said.contains("no program that runs"), "{said}");
 }

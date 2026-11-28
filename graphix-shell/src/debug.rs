@@ -1,7 +1,8 @@
 //! The shell's side of the debugger (`design/debugger.md`): the socket
 //! `--debug` offers, and `graphix debug`, the client a person types at.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
+use arcstr::ArcStr;
 use compact_str::{CompactString, format_compact};
 use graphix_rt::{
     GXExt, GXHandle,
@@ -94,6 +95,15 @@ pub fn socket_of(pid: u32) -> PathBuf {
     PathBuf::from(format_compact!(r"\\.\pipe\graphix-debug-{pid}").as_str())
 }
 
+/// The shell's debugger of `gx`, which says `program` of it.
+fn debugger<X: GXExt>(gx: &GXHandle<X>, program: Option<ArcStr>) -> Debugger<X> {
+    let debugger = Debugger::new(gx.clone()).with_types(graphix_lsp::display_type);
+    match program {
+        Some(name) => debugger.named(name),
+        None => debugger,
+    }
+}
+
 /// What a shell offers its debugger on, given back when it is dropped:
 /// a unix socket's file is removed. A pipe goes with its last handle.
 pub(crate) struct Offered {
@@ -111,7 +121,11 @@ impl Drop for Offered {
 /// Offer `gx`'s debugger at `path`: a unix socket the owner alone may
 /// open, in a directory made the owner's alone.
 #[cfg(unix)]
-pub(crate) fn offer<X: GXExt>(gx: &GXHandle<X>, path: &Path) -> Result<Offered> {
+pub(crate) fn offer<X: GXExt>(
+    gx: &GXHandle<X>,
+    path: &Path,
+    program: Option<ArcStr>,
+) -> Result<Offered> {
     use std::{
         fs::{self, DirBuilder, Permissions},
         os::unix::fs::{DirBuilderExt, FileTypeExt, PermissionsExt},
@@ -132,7 +146,7 @@ pub(crate) fn offer<X: GXExt>(gx: &GXHandle<X>, path: &Path) -> Result<Offered> 
     let listener = tokio::net::UnixListener::bind(path)
         .with_context(|| format!("binding {}", path.display()))?;
     fs::set_permissions(path, Permissions::from_mode(0o600))?;
-    let debugger = Debugger::new(gx.clone()).with_types(graphix_lsp::display_type);
+    let debugger = debugger(gx, program);
     tokio::spawn(async move {
         if let Err(e) = debugger.listen_unix(listener).await {
             warn!("the debugger stopped listening: {e:#}")
@@ -159,14 +173,18 @@ pub(crate) fn offer<X: GXExt>(gx: &GXHandle<X>, path: &Path) -> Result<Offered> 
 // target.
 /// Offer `gx`'s debugger on the named pipe `path`.
 #[cfg(windows)]
-pub(crate) fn offer<X: GXExt>(gx: &GXHandle<X>, path: &Path) -> Result<Offered> {
+pub(crate) fn offer<X: GXExt>(
+    gx: &GXHandle<X>,
+    path: &Path,
+    program: Option<ArcStr>,
+) -> Result<Offered> {
     use tokio::net::windows::named_pipe::ServerOptions;
     let name = path.to_path_buf();
     let first = ServerOptions::new()
         .first_pipe_instance(true)
         .create(&name)
         .with_context(|| format!("making the pipe {}", path.display()))?;
-    let debugger = Debugger::new(gx.clone()).with_types(graphix_lsp::display_type);
+    let debugger = debugger(gx, program);
     tokio::spawn(async move {
         let next = move || ServerOptions::new().create(&name);
         if let Err(e) = debugger.listen_pipe(first, next).await {
@@ -192,56 +210,126 @@ async fn open(path: &Path) -> io::Result<Stream> {
     tokio::net::windows::named_pipe::ClientOptions::new().open(path)
 }
 
-/// The sockets in [`socket_dir`] a program answers on.
+/// A program that answers on its socket: the session opened to it, in
+/// which it said what it is.
+struct Offering {
+    client: Client<Stream>,
+}
+
+/// The programs that answer on the sockets in [`socket_dir`].
 #[cfg(unix)]
-async fn offered() -> Vec<PathBuf> {
+async fn offerings() -> Vec<Offering> {
     let mut live = Vec::new();
     let Ok(dir) = std::fs::read_dir(socket_dir()) else { return live };
-    for entry in dir.filter_map(|e| e.ok()) {
-        let path = entry.path();
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
+    let mut sockets = dir.filter_map(|e| e.ok()).map(|e| e.path()).collect::<Vec<_>>();
+    sockets.sort();
+    for path in sockets {
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
         if name.starts_with("debug-")
             && name.ends_with(".sock")
-            && open(&path).await.is_ok()
+            && let Ok(stream) = open(&path).await
+            && let Ok(client) = Client::connect(stream).await
         {
-            live.push(path)
+            live.push(Offering { client })
         }
     }
-    live.sort();
     live
 }
 
 #[cfg(windows)]
-async fn offered() -> Vec<PathBuf> {
+async fn offerings() -> Vec<Offering> {
     Vec::new()
 }
 
-/// The socket `target` names: a path, a process id, or with none the one
-/// program that offers its debugger.
-async fn socket(target: Option<&str>) -> Result<PathBuf> {
-    match target {
-        Some(t) => match t.parse::<u32>() {
-            Ok(pid) => Ok(socket_of(pid)),
-            Err(_) => Ok(PathBuf::from(t)),
+#[cfg(unix)]
+fn is_socket(path: &Path) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_socket())
+}
+
+#[cfg(windows)]
+fn is_socket(path: &Path) -> bool {
+    path.to_string_lossy().starts_with(r"\\.\pipe\")
+}
+
+/// How to name `o` to `graphix debug`, and what it is.
+fn described(o: &Offering) -> CompactString {
+    let Some(p) = o.client.program() else {
+        return CompactString::const_new("a program that does not say what it is");
+    };
+    let cwd = p.cwd.as_deref().unwrap_or("");
+    let name = p.name.as_deref().unwrap_or("a program");
+    let name =
+        Path::new(name).strip_prefix(cwd).ok().and_then(|n| n.to_str()).unwrap_or(name);
+    format_compact!("graphix debug {}    # {name} in {cwd}", p.pid)
+}
+
+/// Why no program was attached to.
+enum Missed {
+    /// None answers yet: one that was just started may.
+    NotYet(anyhow::Error),
+    /// Waiting will not change it.
+    Never(anyhow::Error),
+}
+
+/// A session with the program `target` names: a process id, a socket,
+/// the file a program runs or the directory it runs in; with none, the
+/// one program that offers a debugger, or of several the one that runs
+/// in this directory.
+async fn find(target: Option<&str>) -> Result<Client<Stream>, Missed> {
+    let direct = |path: PathBuf| async move {
+        let stream = open(&path).await;
+        let stream = stream.with_context(|| format!("connecting to {}", path.display()));
+        Client::connect(stream.map_err(Missed::NotYet)?).await.map_err(Missed::Never)
+    };
+    let real = |path: &Path| path.canonicalize().ok();
+    let at = match target {
+        None => None,
+        Some(t) => match (t.parse::<u32>(), real(Path::new(t))) {
+            (Ok(pid), _) => return direct(socket_of(pid)).await,
+            (Err(_), Some(at)) if !is_socket(Path::new(t)) => Some(at),
+            // a socket, there or not yet
+            (Err(_), Some(_) | None) => return direct(PathBuf::from(t)).await,
         },
-        None => {
-            let mut live = offered().await;
-            match live.len() {
-                0 => bail!(
-                    "no program offers a debugger: run one with `graphix --debug FILE`, \
-                     or name its socket or process id"
-                ),
-                1 => Ok(live.pop().unwrap()),
-                _ => {
-                    let mut msg: LPooled<String> = LPooled::take();
-                    msg.push_str("several programs offer a debugger; name one:");
-                    for p in live.iter() {
-                        let _ = write!(msg, "\n  graphix debug {}", p.display());
-                    }
-                    bail!("{}", msg.as_str())
-                }
+    };
+    let mut live = offerings().await;
+    let is_at = |o: &Offering, at: &Path| {
+        let said = o.client.program();
+        let named = |said: Option<&str>| said.is_some_and(|s| Path::new(s) == at);
+        said.is_some_and(|p| named(p.name.as_deref()) || named(p.cwd.as_deref()))
+    };
+    let here = std::env::current_dir().ok().and_then(|d| real(&d));
+    let chosen = |live: &[Offering], at: Option<&Path>| -> Vec<usize> {
+        let all = 0..live.len();
+        match at {
+            Some(at) => all.filter(|i| is_at(&live[*i], at)).collect(),
+            None => all.collect(),
+        }
+    };
+    let mut picked = chosen(&live, at.as_deref());
+    if at.is_none() && picked.len() > 1 {
+        let here = chosen(&live, here.as_deref());
+        if here.len() == 1 {
+            picked = here
+        }
+    }
+    match (picked.as_slice(), &at) {
+        (&[i], _) => Ok(live.swap_remove(i).client),
+        (&[], Some(at)) => Err(Missed::NotYet(anyhow!(
+            "no program that runs {} offers a debugger",
+            at.display()
+        ))),
+        (&[], None) => Err(Missed::NotYet(anyhow!(
+            "no program offers a debugger: run one with `graphix --debug FILE`, or name \
+             its file, its directory, its process id or its socket"
+        ))),
+        (several, _) => {
+            let mut msg: LPooled<String> = LPooled::take();
+            msg.push_str("several programs offer a debugger; name one:");
+            for i in several {
+                let _ = write!(msg, "\n  {}", described(&live[*i]));
             }
+            Err(Missed::Never(anyhow!("{}", msg.as_str())))
         }
     }
 }
@@ -830,21 +918,19 @@ async fn follow(client: &mut Client<Stream>, how: How) -> Result<()> {
     within(how.limit, events).await.map(|_| ())
 }
 
-/// The socket of `target` and a connection to it. Where `wait`, a
-/// program that does not answer yet is waited for that long: it may have
-/// just been started.
-async fn attach(target: Option<&str>, wait: Option<Duration>) -> Result<Stream> {
-    let connect = || async {
-        let path = socket(target).await?;
-        let stream = open(&path).await;
-        stream.with_context(|| format!("connecting to {}", path.display()))
-    };
+/// A session with the program `target` names ([`find`]). Where `wait`,
+/// a program that does not answer yet is waited for that long: it may
+/// have just been started.
+async fn attach(target: Option<&str>, wait: Option<Duration>) -> Result<Client<Stream>> {
     let started = tokio::time::Instant::now();
     loop {
-        match connect().await {
-            Ok(stream) => break Ok(stream),
-            Err(e) if wait.is_none_or(|w| started.elapsed() >= w) => break Err(e),
-            Err(_) => tokio::time::sleep(ATTACH_EVERY).await,
+        match find(target).await {
+            Ok(client) => break Ok(client),
+            Err(Missed::Never(e)) => break Err(e),
+            Err(Missed::NotYet(e)) if wait.is_none_or(|w| started.elapsed() >= w) => {
+                break Err(e);
+            }
+            Err(Missed::NotYet(_)) => tokio::time::sleep(ATTACH_EVERY).await,
         }
     }
 }
@@ -861,7 +947,7 @@ pub struct Run {
 }
 
 pub struct Args {
-    /// The socket's path or the program's process id.
+    /// The program ([`find`]).
     pub target: Option<String>,
     /// Commands to run in place of reading them.
     pub commands: Vec<String>,
@@ -1006,14 +1092,17 @@ pub fn run(args: Args) -> Result<()> {
         };
         let mut alive = false;
         let asked = async {
-            let stream = match &path {
+            let mut client = match &path {
                 Some(path) => attach(path.to_str(), None).await?,
                 None => {
                     let wait = how.limit.map_or(ATTACH_WAIT, |l| l.min(ATTACH_WAIT));
                     attach(args.target.as_deref(), script.then_some(wait)).await?
                 }
             };
-            let mut client = Client::connect(stream).await?;
+            if let (false, Some(p)) = (script, client.program()) {
+                let name = p.name.as_deref().unwrap_or("a program");
+                eprintln!("attached to {name}, process {}", p.pid)
+            }
             let mut ok = true;
             if !args.commands.is_empty() {
                 for line in &args.commands {

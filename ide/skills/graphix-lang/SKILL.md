@@ -69,8 +69,11 @@ any other line is evaluated as Graphix in the running program
 (`-c 'x + 1'`). `--json` gives one JSON object a line; the exit status is
 1 if a command was refused; `--follow` keeps printing events
 (`graphix debug -c 'watch x' --follow | head -5`). `graphix --debug-wait`
-holds the program before its first cycle, for `step`. Kill the background
-program when done; a held program stays held until `continue`.
+holds the program before its first cycle, for `step`. With several
+programs up, `graphix debug` asks the one running in the current
+directory; else name it by its file, directory or process id
+(`graphix debug ./main.gx -c ..`). Kill the background program when done;
+a held program stays held until `continue`.
 
 `#[native]` on an expression asserts it fuses whole into native code: a
 build refuses it where anything stays in the node-walk. Inside a function

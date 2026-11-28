@@ -79,16 +79,27 @@ session says `continue`.
 - `graphix --debug-wait prog.gx` offers the socket and holds the program
   before its first cycle: it starts when a session says `continue` or
   `step`.
-- `graphix debug [PATH | PID] [-c CMD]..` attaches, runs its commands
-  and exits: the harness for a script or an agent, run once for each
-  thing asked, against a program run as usual. With no target it
-  attaches to the one program that offers a debugger and lists them when
-  there are several. `-c` runs a command (several may be given), as
-  lines piped to stdin do; the exit status is 1 if any was refused. A
-  program that does not answer yet is waited for, up to five seconds: it
-  may have just been started. With no commands at a terminal it reads
-  lines with a line editor, and what a watch or a shown value reports
-  prints above the prompt.
+- `graphix debug [TARGET] [-c CMD]..` attaches, runs its commands and
+  exits: the harness for a script or an agent, run once for each thing
+  asked, against a program run as usual. `-c` runs a command (several
+  may be given), as lines piped to stdin do; the exit status is 1 if any
+  was refused. With no commands at a terminal it reads lines with a line
+  editor, and what a watch or a shown value reports prints above the
+  prompt.
+- **Which program.** A `TARGET` is a process id, a socket's path, the
+  file a program runs, or the directory it runs in. With none, it is the
+  one program that offers a debugger; of several, the one that runs in
+  the directory `graphix debug` is run in. So two programs called
+  `./main.gx`, each run in its own directory, are each asked from their
+  own directory with no target at all. Where that does not single one
+  out, the refusal lists them, each by its process id with its file and
+  directory. A debugger says what it is in its hello (`proto::Program`:
+  process id, directory, and the name its embedder gave it, which for
+  the shell is the file's real path), so a client reads the hellos of
+  the sockets in the runtime directory and asks nothing; a session is
+  attached to the runtime only at its first request, so being looked at
+  costs a program nothing. A program that does not answer yet is waited
+  for, up to five seconds or the timeout: it may have just been started.
 - `--follow` goes on after the commands, printing each event (a watch's,
   a shown value's) as it comes, until the program ends, the output is
   closed (`| head`) or the timeout. With no commands it only listens, so

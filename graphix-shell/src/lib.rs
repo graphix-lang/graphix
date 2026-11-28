@@ -513,6 +513,23 @@ pub enum Mode {
 }
 
 impl Mode {
+    /// What a debugger calls the program: the file it runs, by its real
+    /// path, or where it was loaded from.
+    fn program(&self) -> Option<ArcStr> {
+        match self {
+            Mode::Repl => None,
+            Mode::Script(load) | Mode::Check(load) => match load {
+                Load::File(file) => {
+                    let real = std::fs::canonicalize(file);
+                    let real = real.as_deref().unwrap_or(file);
+                    Some(arcstr::format!("{}", real.display()))
+                }
+                Load::Netidx(path) => Some(arcstr::format!("netidx:{path}")),
+                Load::Text(_) => None,
+            },
+        }
+    }
+
     fn file_mode(&self) -> bool {
         match self {
             Self::Repl => false,
@@ -988,7 +1005,7 @@ impl<X: GXExt> Shell<X> {
                 Err(code) => break Ok(code),
             };
             if let (Some(path), None) = (&self.debug, &session.debug) {
-                match debug::offer(&session.gx, path) {
+                match debug::offer(&session.gx, path, self.mode.program()) {
                     Ok(offered) => session.debug = Some(offered),
                     Err(e) => break Err(e),
                 }

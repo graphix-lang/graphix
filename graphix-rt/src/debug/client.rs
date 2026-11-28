@@ -1,7 +1,9 @@
 //! A debugger client over any byte stream: what `graphix debug` and a
 //! test speak the protocol with.
 
-use super::proto::{Command, Event, Hello, Outcome, Reply, Request, Response, VERSION};
+use super::proto::{
+    Command, Event, Hello, Outcome, Program, Reply, Request, Response, VERSION,
+};
 use anyhow::{Result, anyhow, bail};
 use serde_derive::Deserialize;
 use std::collections::VecDeque;
@@ -25,6 +27,7 @@ pub struct Client<S> {
     events: VecDeque<Event>,
     /// The answers that arrived while another was waited for.
     answers: Vec<(u64, Outcome)>,
+    program: Option<Program>,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
@@ -32,19 +35,32 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
     pub async fn connect(stream: S) -> Result<Self> {
         let (rd, mut out) = tokio::io::split(stream);
         let mut lines = BufReader::new(rd).lines();
-        let mut hello = serde_json::to_vec(&Hello { graphix_debug: VERSION })?;
+        let ours = Hello { graphix_debug: VERSION, program: None };
+        let mut hello = serde_json::to_vec(&ours)?;
         hello.push(b'\n');
         out.write_all(&hello).await?;
         out.flush().await?;
         let Some(line) = lines.next_line().await? else {
             bail!("the debugger closed the connection")
         };
-        match serde_json::from_str::<Hello>(&line) {
-            Ok(h) if h.graphix_debug == VERSION => (),
+        let program = match serde_json::from_str::<Hello>(&line) {
+            Ok(h) if h.graphix_debug == VERSION => h.program,
             Ok(h) => bail!("the debugger speaks version {}", h.graphix_debug),
             Err(e) => bail!("this is no graphix debugger: {e}"),
-        }
-        Ok(Self { lines, out, sent: 0, events: VecDeque::new(), answers: Vec::new() })
+        };
+        Ok(Self {
+            lines,
+            out,
+            sent: 0,
+            events: VecDeque::new(),
+            answers: Vec::new(),
+            program,
+        })
+    }
+
+    /// What the debugger said of the program it debugs.
+    pub fn program(&self) -> Option<&Program> {
+        self.program.as_ref()
     }
 
     async fn line(&mut self) -> Result<Option<Line>> {

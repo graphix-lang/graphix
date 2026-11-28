@@ -6539,7 +6539,16 @@ runs as usual. In another terminal, attach:</p>
 <pre><code class="language-bash">graphix debug
 </code></pre>
 <p>With one program offering a debugger that is all it takes. With several,
-name the one you mean by its process id or the socket's path.</p>
+<code>graphix debug</code> picks the one running in the directory you are in, so
+two projects that each run <code>./main.gx</code> are each debugged from their own
+directory. From anywhere else, name the one you mean: by its file, its
+directory, or its process id.</p>
+<pre><code class="language-bash">graphix debug ~/proj/admin/main.gx
+graphix debug ~/proj/admin
+graphix debug 48213
+</code></pre>
+<p>If it cannot tell which you mean it lists them, each with its file and
+directory.</p>
 <h2 id="asking"><a class="header" href="#asking">Asking</a></h2>
 <p><code>print</code> shows a binding's type, its value, and the cycle that last wrote
 it. <code>list</code> shows every binding your program introduces.</p>

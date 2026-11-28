@@ -19,7 +19,19 @@ graphix debug
 ```
 
 With one program offering a debugger that is all it takes. With several,
-name the one you mean by its process id or the socket's path.
+`graphix debug` picks the one running in the directory you are in, so
+two projects that each run `./main.gx` are each debugged from their own
+directory. From anywhere else, name the one you mean: by its file, its
+directory, or its process id.
+
+```bash
+graphix debug ~/proj/admin/main.gx
+graphix debug ~/proj/admin
+graphix debug 48213
+```
+
+If it cannot tell which you mean it lists them, each with its file and
+directory.
 
 ## Asking
 
