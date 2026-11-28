@@ -2696,7 +2696,7 @@ fn a_pattern_string_lexes_as_an_expression_string() {
         .unwrap();
     let ExprKind::Select(SelectExpr { arms, .. }) = &e.kind else { panic!("{e:?}") };
     let lit = |i: usize| match &arms[i].0.structure_predicate {
-        StructurePattern::Literal(Value::String(s), _) => s.clone(),
+        StructurePattern::Literal { value: Value::String(s), .. } => s.clone(),
         p => panic!("{p:?}"),
     };
     assert_eq!(lit(0), "a[b");
@@ -2704,6 +2704,37 @@ fn a_pattern_string_lexes_as_an_expression_string() {
     assert_eq!(lit(2), "e\"f");
     assert_eq!(parse_one(&e.to_string()).unwrap(), e);
     assert!(parse_one(r#"select s { "a[x]" => 1, _ => 2 }"#).is_err());
+}
+
+#[test]
+fn a_capture_stands_over_a_literal() {
+    let src = r#"select x { t@ 1 => t, s@ "go" => s, b@ true | b@ false => b, n@ null => n, (k@ 2, _) => k }"#;
+    let e = parse_one(src).unwrap();
+    let ExprKind::Select(SelectExpr { arms, .. }) = &e.kind else { panic!("{e:?}") };
+    let captured = |p: &StructurePattern| match p {
+        StructurePattern::Literal { all: Some(n), value, .. } => {
+            (n.name.clone(), value.clone())
+        }
+        p => panic!("{p:?}"),
+    };
+    let top = |i: usize| captured(&arms[i].0.structure_predicate);
+    assert_eq!(top(0), ("t".into(), Value::I64(1)));
+    assert_eq!(top(1), ("s".into(), Value::String("go".into())));
+    assert_eq!(top(3), ("n".into(), Value::Null));
+    let StructurePattern::Or(alts) = &arms[2].0.structure_predicate else {
+        panic!("{e:?}")
+    };
+    assert_eq!(captured(&alts[1]), ("b".into(), Value::Bool(false)));
+    let StructurePattern::Tuple { binds, .. } = &arms[4].0.structure_predicate else {
+        panic!("{e:?}")
+    };
+    assert_eq!(captured(&binds[0]), ("k".into(), Value::I64(2)));
+    assert_eq!(e.to_string(), src);
+    assert_eq!(parse_one(&e.to_string()).unwrap(), e);
+    for src in ["select x { t@ _ => t }", "select x { t@ y => t }"] {
+        let err = format!("{:?}", parse_one(src).unwrap_err());
+        assert!(err.contains("takes a pattern that tests the value"), "{err}");
+    }
 }
 
 #[test]

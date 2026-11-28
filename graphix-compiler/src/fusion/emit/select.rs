@@ -804,11 +804,20 @@ fn emit_leaf_cond_inner(
             binds.push(at.bind(*id, typ, kind));
             None
         }
+        StructPatternNode::Literal { all: Some(id), value } => {
+            let lit = Type::of_literal(value)?;
+            let kind = payload_local_kind(&lit).ok_or_else(|| {
+                anyhow!("emit_clif: select pattern capture {lit:?} not lowerable")
+            })?;
+            binds.push(at.bind(*id, &lit, kind));
+            let bare = StructPatternNode::Literal { all: None, value: value.clone() };
+            emit_leaf_cond_inner(cx, at, &bare, typ, exact, binds)?
+        }
         // The typed element read is total: a slot not of `prim`'s family
         // reads as 0, which a `0` literal would match. Only the value's
         // own static type proves the read faithful; any other literal
         // tests the value.
-        StructPatternNode::Literal(v)
+        StructPatternNode::Literal { all: None, value: v }
             if let LeafAt::Elem { ptr, idx } = at
                 && exact
                 && let Some(prim) = kernel_abi::scalar_prim_of_value(v)
@@ -818,7 +827,7 @@ fn emit_leaf_cond_inner(
             let lit = compile_const(cx.b, v, prim)?;
             Some(compile_cmp(cx.b, CmpOp::Eq, prim, elem, lit))
         }
-        StructPatternNode::Literal(_) => {
+        StructPatternNode::Literal { all: None, .. } => {
             let words = at.words(cx)?;
             Some(emit_value_leaf_cond(cx, sub, typ, exact, words)?)
         }
@@ -2229,6 +2238,64 @@ fn emit_select_arm_value<R: Rt>(
     })
 }
 
+/// The bind of the whole scrutinee, read as a value of `typ`, to `id`.
+fn bind_scrut(
+    id: BindId,
+    typ: &Type,
+    scrut: SelectScrut,
+    scrut_typ: &Type,
+) -> Result<SelectArmBind> {
+    Ok(match scrut {
+        SelectScrut::Scalar { .. } => SelectArmBind::Scrut(id),
+        // A bind under a primitive union: the scalar `typ` names, its
+        // string, or the value itself.
+        SelectScrut::Value { kind: ValueKind::Value | ValueKind::String, .. }
+            if matches!(scrut_typ, Type::Primitive(_)) =>
+        {
+            let typ = kernel_abi::freeze_for_abi(typ);
+            match typ.as_ref().and_then(kernel_abi::scalar_prim) {
+                Some(prim) => SelectArmBind::Value { id, kind: LocalKind::Scalar(prim) },
+                None => {
+                    let kind = match typ.as_ref().and_then(kernel_abi::abi_kind) {
+                        Some(AbiKind::String) => OwnedKind::String,
+                        _ => OwnedKind::Value,
+                    };
+                    SelectArmBind::Value { id, kind: kind.into() }
+                }
+            }
+        }
+        // Every payload read is total (a scalar reads bits, a clone
+        // defaults on a mismatch), so a bind needs no test of its own:
+        // the chain took this arm.
+        SelectScrut::Value { kind: ValueKind::Nullable, .. } => {
+            let typ = kernel_abi::freeze_for_abi(typ);
+            match typ.as_ref().and_then(kernel_abi::scalar_prim) {
+                Some(prim) => SelectArmBind::Value { id, kind: LocalKind::Scalar(prim) },
+                None => {
+                    let kind = typ.as_ref().and_then(owned_kind).ok_or_else(|| {
+                        anyhow!(
+                            "emit_clif: nullable scrutinee bind predicate {typ:?} \
+                             not lowerable"
+                        )
+                    })?;
+                    SelectArmBind::Value { id, kind: kind.into() }
+                }
+            }
+        }
+        // the whole value, cloned out as an owned local of the bind's kind
+        SelectScrut::Value { .. } => {
+            let typ = kernel_abi::freeze_for_abi_normalized(typ);
+            let kind = typ.as_ref().and_then(payload_local_kind).ok_or_else(|| {
+                anyhow!("emit_clif: scrutinee bind of type {typ:?} not lowerable")
+            })?;
+            SelectArmBind::Value { id, kind }
+        }
+        SelectScrut::Composite { ptr, .. } => {
+            SelectArmBind::Subslice { id, start: 0, back: 0, parent_ptr: ptr }
+        }
+    })
+}
+
 /// One structure pattern's condition against the scrutinee: the
 /// per-shape half of [`emit_arm_cond`], also called by [`emit_or_chain`]
 /// once per alternative with that alternative's member of the arm's
@@ -2242,6 +2309,12 @@ fn emit_structure_cond(
     scrut_typ: &Type,
     binds: &mut SmallVec<[SelectArmBind; 8]>,
 ) -> Result<Option<ClifValue>> {
+    if let StructPatternNode::Literal { all: Some(id), value } = sp {
+        if let SelectScrut::Composite { .. } = scrut {
+            bail!("emit_clif: a literal's capture over the composite {scrut_typ}")
+        }
+        binds.push(bind_scrut(*id, &Type::of_literal(value)?, scrut, scrut_typ)?)
+    }
     let scond: Option<ClifValue> = match sp {
         StructPatternNode::Abstract { .. } => {
             return Err(anyhow!("emit_clif: abstract patterns are not lowered"));
@@ -2253,77 +2326,12 @@ fn emit_structure_cond(
             ));
         }
         StructPatternNode::Ignore => None,
-        StructPatternNode::Bind(id) => match scrut {
-            SelectScrut::Scalar { .. } => {
-                binds.push(SelectArmBind::Scrut(*id));
-                None
-            }
-            // A bind under a primitive union: the scalar the arm's
-            // predicate names, its string, or the value itself.
-            SelectScrut::Value { kind: ValueKind::Value | ValueKind::String, .. }
-                if matches!(scrut_typ, Type::Primitive(_)) =>
-            {
-                let pred = kernel_abi::freeze_for_abi(pred_typ);
-                binds.push(match pred.as_ref().and_then(kernel_abi::scalar_prim) {
-                    Some(prim) => {
-                        SelectArmBind::Value { id: *id, kind: LocalKind::Scalar(prim) }
-                    }
-                    None => {
-                        let kind = match pred.as_ref().and_then(kernel_abi::abi_kind) {
-                            Some(AbiKind::String) => OwnedKind::String,
-                            _ => OwnedKind::Value,
-                        };
-                        SelectArmBind::Value { id: *id, kind: kind.into() }
-                    }
-                });
-                None
-            }
-            SelectScrut::Value { kind: ValueKind::Nullable, .. } => {
-                // Every payload read is total (a scalar reads bits, a
-                // clone defaults on a mismatch), so a bind needs no test of
-                // its own: the chain took this arm.
-                let pred = kernel_abi::freeze_for_abi(pred_typ);
-                let bind = match pred.as_ref().and_then(kernel_abi::scalar_prim) {
-                    Some(prim) => {
-                        SelectArmBind::Value { id: *id, kind: LocalKind::Scalar(prim) }
-                    }
-                    None => {
-                        let kind = pred.as_ref().and_then(owned_kind).ok_or_else(|| {
-                            anyhow!(
-                                "emit_clif: nullable scrutinee bind predicate {pred:?} \
-                                 not lowerable"
-                            )
-                        })?;
-                        SelectArmBind::Value { id: *id, kind: kind.into() }
-                    }
-                };
-                binds.push(bind);
-                None
-            }
-            // the whole value, cloned out as an owned local of the bind's kind
-            SelectScrut::Value { .. } => {
-                let pred = kernel_abi::freeze_for_abi_normalized(pred_typ);
-                let kind =
-                    pred.as_ref().and_then(payload_local_kind).ok_or_else(|| {
-                        anyhow!(
-                            "emit_clif: scrutinee bind of type {pred:?} not lowerable"
-                        )
-                    })?;
-                binds.push(SelectArmBind::Value { id: *id, kind });
-                None
-            }
-            SelectScrut::Composite { ptr, .. } => {
-                binds.push(SelectArmBind::Subslice {
-                    id: *id,
-                    start: 0,
-                    back: 0,
-                    parent_ptr: ptr,
-                });
-                None
-            }
-        },
+        StructPatternNode::Bind(id) => {
+            binds.push(bind_scrut(*id, pred_typ, scrut, scrut_typ)?);
+            None
+        }
         // a string literal: the value's tag and its string
-        StructPatternNode::Literal(Value::String(lit)) => match scrut {
+        StructPatternNode::Literal { value: Value::String(lit), .. } => match scrut {
             SelectScrut::Value { disc, payload, .. } => {
                 let lit = cx.interned_str(lit)?;
                 let call =
@@ -2336,10 +2344,10 @@ fn emit_structure_cond(
                 ));
             }
         },
-        StructPatternNode::Literal(Value::Null) => {
+        StructPatternNode::Literal { value: Value::Null, .. } => {
             Some(emit_null_cond(cx, scrut, scrut_typ)?)
         }
-        StructPatternNode::Literal(v) => {
+        StructPatternNode::Literal { value: v, .. } => {
             let lit_prim = kernel_abi::scalar_prim_of_value(v)
                 .ok_or_else(|| anyhow!("emit_clif: non-scalar literal pattern {v:?}"))?;
             match scrut {

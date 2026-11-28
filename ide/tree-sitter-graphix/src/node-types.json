@@ -6439,6 +6439,48 @@
     }
   },
   {
+    "type": "literal_capture",
+    "named": true,
+    "fields": {
+      "all": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "literal",
+          "named": true
+        },
+        {
+          "type": "raw_string",
+          "named": true
+        },
+        {
+          "type": "triple_string",
+          "named": true
+        },
+        {
+          "type": "type_ascription",
+          "named": true
+        },
+        {
+          "type": "value_string",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "live",
     "named": true,
     "fields": {},
@@ -12218,6 +12260,10 @@
         },
         {
           "type": "literal",
+          "named": true
+        },
+        {
+          "type": "literal_capture",
           "named": true
         },
         {

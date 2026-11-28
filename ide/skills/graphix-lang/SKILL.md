@@ -134,8 +134,9 @@ design/review-2026-11-16/repro/lang-skill-select-result-fires.gx (lang-skill-02)
   runs, a timer over constants never starts (the check warns of each).
   Nothing that fired while the arm was not running is delivered when it
   is entered: what it captured reads stale. Sample on the bind:
-  `` k@ `Esc => screen <- k ~ `Menu ``, `k ~ target` for a capture's value
-  at entry, `any(target, k ~ target)` for entry and every live change.
+  `` k@ `Esc => screen <- k ~ `Menu `` (a literal arm too: `t@ 2 => x <-
+  t ~ v`), `k ~ target` for a capture's value at entry, `any(target, k ~
+  target)` for entry and every live change.
   Or start the arm's body over at each entry, `` k@ `Edit => fresh k { ..
   } ``, where it should begin again and not resume (see "A block that
   starts over" below).
@@ -672,12 +673,16 @@ select x {
   [] => 0,  [a, b] => a + b,  [h, rest..] => h,  // length ladders count as coverage
   [<>] => 0,  [<h, t..>] => h,   // list patterns; suffix form refused
   v@ `Some(inner) => use_both(v, inner),
+  k@ 2 => on_two(k),             // a capture over a literal: its value, and the arm's event
   _ => default
 }
 ```
 
 ```graphix,cases
 ok let x: [i64, string] = 1; select x { Number as n => n + 1, s => 0 }
+ok let x: [i64, null] = 3; select x { t@ 3 => t + 1, _ => 0 }
+ok let n = 0; let hits = 0; select n { t@ 2 => hits <- t ~ hits + 1, _ => never() }
+no "takes a pattern that tests the value" let x = 1; select x { t@ _ => t }
 no "a `,` separates" let x = (1.0, 2.0); select x { (f64 as n, f64 as a) => 1 }
 ok let v: [`A(i64), `B(i64), `C] = `C; select v { `A(m) | `B(m) => m, _ => 0 }
 ok |x: [`A(Array<i64>), `B(Array<string>)]| select x { `A([h, ..]) | `B([h, ..]) => "[h]", _ => "" }

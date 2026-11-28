@@ -18,7 +18,11 @@ use triomphe::Arc;
 pub enum StructurePattern {
     Ignore,
     /// A literal, and for a string how it was delimited.
-    Literal(Value, WrittenForm),
+    Literal {
+        all: Option<Name>,
+        value: Value,
+        form: WrittenForm,
+    },
     Bind(Name),
     Slice {
         /// true = a list pattern `[<..>]` over the native List; false
@@ -72,13 +76,13 @@ pub enum StructurePattern {
 impl StructurePattern {
     /// A literal the compiler built.
     pub fn literal(v: Value) -> Self {
-        Self::Literal(v, WrittenForm::default())
+        Self::Literal { all: None, value: v, form: WrittenForm::default() }
     }
 
     /// Each sub-pattern, in written order.
     pub fn for_each_sub<'a>(&'a self, f: &mut impl FnMut(&'a Self)) {
         match self {
-            Self::Ignore | Self::Literal(..) | Self::Bind(_) => (),
+            Self::Ignore | Self::Literal { .. } | Self::Bind(_) => (),
             Self::Abstract { bind, .. } => f(bind),
             Self::Struct { binds, .. } => binds.iter().for_each(|(_, p, _)| f(p)),
             Self::Slice { binds: ps, .. }
@@ -190,7 +194,7 @@ impl StructurePattern {
         }
         use StructurePattern as P;
         crate::stack::ensure_sufficient(|| match (self, t) {
-            (P::Ignore | P::Bind(_) | P::Literal(..) | P::Abstract { .. }, _) => None,
+            (P::Ignore | P::Bind(_) | P::Literal { .. } | P::Abstract { .. }, _) => None,
             (_, Type::TVar(tv)) => self.collection_view_inner(env, &tv.binding()?),
             (_, Type::Ref(_)) => {
                 self.collection_view_inner(env, &t.lookup_ref(env).ok()?)
@@ -244,7 +248,7 @@ impl StructurePattern {
         match self {
             Self::Bind(s) => Some(s),
             Self::Ignore
-            | Self::Literal(..)
+            | Self::Literal { .. }
             | Self::Slice { .. }
             | Self::SlicePrefix { .. }
             | Self::SliceSuffix { .. }
@@ -268,14 +272,15 @@ impl StructurePattern {
     /// The `name@` capture of this pattern.
     pub(crate) fn all(&self) -> Option<&Name> {
         match self {
-            Self::Slice { all, .. }
+            Self::Literal { all, .. }
+            | Self::Slice { all, .. }
             | Self::SlicePrefix { all, .. }
             | Self::SliceSuffix { all, .. }
             | Self::Tuple { all, .. }
             | Self::Variant { all, .. }
             | Self::Abstract { all, .. }
             | Self::Struct { all, .. } => all.as_ref(),
-            Self::Ignore | Self::Literal(..) | Self::Bind(_) | Self::Or(_) => None,
+            Self::Ignore | Self::Bind(_) | Self::Or(_) => None,
         }
     }
 
@@ -285,7 +290,7 @@ impl StructurePattern {
         }
         let (rest, subs): (Option<&Name>, &[Self]) = match self {
             Self::Bind(n) => return f(n),
-            Self::Ignore | Self::Literal(..) => return,
+            Self::Ignore | Self::Literal { .. } => return,
             Self::Abstract { bind, .. } => return bind.with_bound_names(f),
             Self::Or(alts) => return alts[0].with_bound_names(f),
             Self::Struct { binds, .. } => {
@@ -322,7 +327,7 @@ impl StructurePattern {
             // select unifies through `Type::any_as_tvar` to narrow past it.
             Self::Ignore => Ok(Type::Any),
             Self::Bind(_) => Ok(Type::empty_tvar()),
-            Self::Literal(v, _) => Type::of_literal(v),
+            Self::Literal { value, .. } => Type::of_literal(value),
             Self::Tuple { all: _, binds } => {
                 let a = binds
                     .iter()
@@ -638,9 +643,10 @@ impl StructurePattern {
                 }
                 Ok(changed.then(|| Type::Set(Arc::from_iter(out))))
             }
-            Self::Abstract { .. } | Self::Ignore | Self::Bind(_) | Self::Literal(..) => {
-                Ok(None)
-            }
+            Self::Abstract { .. }
+            | Self::Ignore
+            | Self::Bind(_)
+            | Self::Literal { .. } => Ok(None),
         }
     }
 
@@ -918,7 +924,7 @@ impl StructurePattern {
     pub fn only_destructures(&self) -> bool {
         crate::stack::ensure_sufficient(|| match self {
             Self::Ignore | Self::Bind(_) => true,
-            Self::Literal(..)
+            Self::Literal { .. }
             | Self::Variant { .. }
             | Self::Or(_)
             | Self::Slice { .. }
@@ -1029,8 +1035,8 @@ impl StructurePattern {
         let (stop, held) = met.decided();
         crate::stack::ensure_sufficient(|| match self {
             Self::Ignore | Self::Bind(_) => Ok(true),
-            Self::Literal(..) if matches!(typ, Type::TVar(tv) if stop(tv)) => Ok(true),
-            Self::Literal(v, _) => Type::of_literal(v)?.could_match(env, typ),
+            Self::Literal { .. } if matches!(typ, Type::TVar(tv) if stop(tv)) => Ok(true),
+            Self::Literal { value, .. } => Type::of_literal(value)?.could_match(env, typ),
             Self::Or(alts) => {
                 for a in alts.iter() {
                     if a.may_hold_met(env, ids, typ, met)? {
@@ -1327,12 +1333,12 @@ impl StructurePattern {
         }
         match self {
             StructurePattern::Ignore => write!(f, "_"),
-            StructurePattern::Literal(v @ Value::String(s), form)
+            StructurePattern::Literal { value: v @ Value::String(s), form, .. }
                 if print_as_written() =>
             {
                 super::print::write_str_constant(f, v, s, form.0)
             }
-            StructurePattern::Literal(v, _) => write!(f, "{}", Literal(v)),
+            StructurePattern::Literal { value, .. } => write!(f, "{}", Literal(value)),
             StructurePattern::Bind(n) => write!(f, "{n}"),
             StructurePattern::Slice { list, all: _, binds } => {
                 write!(f, "{}", if *list { "[<" } else { "[" })?;

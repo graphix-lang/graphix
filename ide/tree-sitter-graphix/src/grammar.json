@@ -2676,6 +2676,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "literal_capture"
+        },
+        {
+          "type": "SYMBOL",
           "name": "pattern_bind"
         },
         {
@@ -2713,6 +2717,48 @@
         {
           "type": "SYMBOL",
           "name": "struct_pattern"
+        }
+      ]
+    },
+    "literal_capture": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "FIELD",
+          "name": "all",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_binding_name"
+          }
+        },
+        {
+          "type": "STRING",
+          "value": "@"
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SYMBOL",
+              "name": "type_ascription"
+            },
+            {
+              "type": "SYMBOL",
+              "name": "literal"
+            },
+            {
+              "type": "SYMBOL",
+              "name": "value_string"
+            },
+            {
+              "type": "SYMBOL",
+              "name": "raw_string"
+            },
+            {
+              "type": "SYMBOL",
+              "name": "triple_string"
+            }
+          ]
         }
       ]
     },

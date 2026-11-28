@@ -110,6 +110,8 @@ no "Number does not contain Any" |x: Any| select x { (a, b) => a + b + 1, _ => 0
 - **Or-patterns** (`Pat::Or`, `design/or_patterns.md`): each alternative takes its part,
   and a name the alternatives share is the union of them.
 - **`name@ pattern`**: the name takes the whole part its pattern admits, as one type.
+  Over a literal that is the literal's type (`Pat::Whole` around the literal); over `_`
+  or a bare name it is refused, the name alone says it.
 - **Partial struct patterns** take every member that has the fields they name; the
   members one arm reads must lay those fields out alike (`one_layout`).
 - **Slices**: arms of different lengths cover an array between them, the lengths left

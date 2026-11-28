@@ -528,6 +528,7 @@ module.exports = grammar({
       $.value_string,
       $.raw_string,
       $.triple_string,
+      $.literal_capture,
       $.pattern_bind,
       $.tuple_pattern,
       $.array_pattern,
@@ -538,6 +539,19 @@ module.exports = grammar({
       $.variant_pattern,
       $.abstract_pattern,
       $.struct_pattern,
+    ),
+
+    // `name@ literal`: the value the literal matched, under a name.
+    literal_capture: $ => seq(
+      field('all', $._binding_name),
+      '@',
+      choice(
+        $.type_ascription,
+        $.literal,
+        $.value_string,
+        $.raw_string,
+        $.triple_string,
+      ),
     ),
 
     // Or-alternatives (design/or_patterns.md): legal in select arms

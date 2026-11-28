@@ -14255,3 +14255,66 @@ run!(
         let f = |x: i64| select x { 0 => v.a, _ => error("") }; let u = f(0)$; (r, u) }"#,
     prints(r#"[i64:7, "x"]"#)
 );
+
+// A capture over a literal binds the value the literal matched, at the
+// literal's type: the arm's event, to sample by.
+run!(
+    literal_capture_is_the_literals_value,
+    r#"{
+    let f = |x: i64| -> i64 #[native] select x {
+      t@ 1 => t + 10,
+      t@ 2 | t@ 3 => t + 20,
+      _ => 0
+    };
+    [f(1), f(2), f(3), f(4)]
+}"#,
+    prints("[i64:11, i64:22, i64:23, i64:0]")
+);
+
+run!(
+    literal_capture_takes_its_member_of_a_union,
+    r#"{
+    let f = |x: [i64, string, null]| -> string select x {
+      s@ "go" => str::concat(s, "!"),
+      n@ 1 | n@ 2 => "small [n + 1]",
+      z@ null => "none [z]",
+      i64 as i => "int [i]",
+      string as s => s
+    };
+    let g = |p: (i64, bool)| -> i64 select p {
+      (a@ 7, b@ true) => select b { true => a + 1, false => 0 },
+      (a, _) => a
+    };
+    (f("go"), f(1), f(2), f(3), f(null), f("stay"), g((7, true)), g((7, false)))
+}"#,
+    prints(
+        r#"["go!", "small 2", "small 3", "int 3", "none null", "stay", i64:8, i64:7]"#
+    )
+);
+
+// The capture fires at each event the literal takes, so a literal arm
+// acts once an entry and reads its state sampled.
+run!(
+    literal_capture_fires_at_each_event_the_literal_takes,
+    r#"{
+    let n = array::iter([1, 2, 3, 2]);
+    let hits = 0;
+    select n {
+      t@ 2 => hits <- t ~ hits + 1,
+      _ => never()
+    };
+    array::group(hits, |len, _| len == 3)
+}"#,
+    prints("[i64:0, i64:1, i64:2]");
+    FuseExpect::None
+);
+
+run!(
+    literal_capture_is_typed_by_the_literal,
+    r#"{
+    let x: [i64, string] = 1;
+    select x { t@ 1 => str::len(t), _ => 0 }
+}"#,
+    refused("string does not contain i64");
+    FuseExpect::None
+);

@@ -215,7 +215,11 @@ fn literal_pattern(i: &mut Input) -> R<StructurePattern> {
                 .map(|v| (v, WrittenForm::default()))
             })?;
             not_prefix(i)?;
-            finite(i, start, v).map(|v| StructurePattern::Literal(v, form))
+            finite(i, start, v).map(|value| StructurePattern::Literal {
+                all: None,
+                value,
+                form,
+            })
         },
         |i| i.attempt(int_range_note),
         |i| i.attempt(|i| i.knot(duration_unit_note))
@@ -250,22 +254,31 @@ pub(super) fn structure_pattern(i: &mut Input) -> R<StructurePattern> {
         )?;
         let end = i.pos();
         match pat {
-            StructurePattern::Ignore
-            | StructurePattern::Literal(..)
-            | StructurePattern::Bind(_)
-                if all.is_some() =>
-            {
-                // CR claude for eric: [structure/low] A capture over a literal pattern
-                // (`t@ 1`, `s@ "go"`, `t@ true`) is a parse error, yet `k@ pat => x <-
-                // k ~ v` is the form the book, the skill and `warn_constant_action`'s
-                // message give for acting when an arm is entered. A literal arm must
-                // sample the scrutinee by name instead, which needs a `let` whenever
-                // the scrutinee is an expression. Admit a capture over a literal: the
-                // bind is the event and its value the literal's. probe:
-                // design/review-2026-11-16/repro/a-language-check-refusals.sh (case 9)
-                // (a-language-11)
-                Err(i.refuse(end, "a capture `name@` takes a structure pattern"))
+            // XCR claude for claude: [structure/low] A capture over a literal pattern
+            // (`t@ 1`, `s@ "go"`, `t@ true`) is a parse error, yet `k@ pat => x <-
+            // k ~ v` is the form the book, the skill and `warn_constant_action`'s
+            // message give for acting when an arm is entered. A literal arm must
+            // sample the scrutinee by name instead, which needs a `let` whenever
+            // the scrutinee is an expression. Admit a capture over a literal: the
+            // bind is the event and its value the literal's. probe:
+            // design/review-2026-11-16/repro/a-language-check-refusals.sh (case 9)
+            // (a-language-11)
+            // 2026-11-27 claude: Eric ruled (2026-11-27): "yes, we can admit the
+            // literal capture".
+            // 2026-11-27 claude: Built: `t@ 1`, `s@ "go"`, `b@ true`, `n@ null` and
+            // a typed literal bind the value the literal took, at the literal's
+            // type, in every position a literal pattern stands; `t@ _` and `t@ y`
+            // are still refused ("a capture `name@` takes a pattern that tests the
+            // value"). Regression: parser `a_capture_stands_over_a_literal` and
+            // `ts_literal_capture_parses`, lang::select `literal_capture_*` (four,
+            // every mode, one `#[native]`), the skill SKILL.md cases, and the fuzzer
+            // now writes captured literals.
+            StructurePattern::Literal { all: _, value, form } => {
+                Ok(StructurePattern::Literal { all: all.clone(), value, form })
             }
+            StructurePattern::Ignore | StructurePattern::Bind(_) if all.is_some() => Err(
+                i.refuse(end, "a capture `name@` takes a pattern that tests the value"),
+            ),
             pat => Ok(pat),
         }
     })

@@ -1447,11 +1447,17 @@ impl Checker {
         Ok(match p {
             StructurePattern::Ignore => Pat::Any(None),
             StructurePattern::Bind(n) => Pat::Any(named(self, &Some(n.clone()))),
-            StructurePattern::Literal(Value::Bool(b), _) => {
-                Pat::Variant(None, if *b { TRUE } else { FALSE }.into(), vec![])
+            StructurePattern::Literal { all, value: Value::Bool(b), .. } => {
+                let tag = if *b { TRUE } else { FALSE };
+                Pat::Variant(named(self, all), tag.into(), vec![])
             }
-            StructurePattern::Literal(v, _) => {
-                Pat::Lit(Ty::prim(Typ::get(v)), matches!(v, Value::Null))
+            StructurePattern::Literal { all, value, .. } => {
+                let lit =
+                    Pat::Lit(Ty::prim(Typ::get(value)), matches!(value, Value::Null));
+                match named(self, all) {
+                    Some(whole) => Pat::Whole(whole, Box::new(lit)),
+                    None => lit,
+                }
             }
             StructurePattern::Tuple { all, binds } => {
                 Pat::Tuple(named(self, all), subs(self, binds)?)

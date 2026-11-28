@@ -1,0 +1,6 @@
+// A capture over a literal pattern (`t@ 2`) binds the value the literal took, at the
+// literal's type, and fires at each event its arm takes: the event a literal arm
+// samples by (book/src/core/select.md, Structure Patterns). `hits` counts the 2s among
+// step % 3 and `seen` follows each captured value, an or-pattern's captures included.
+// Expected (both engines): the last value is [3, 20].
+{ let step = 0; step <- select step { n if n < 8 => n + 1, _ => never() }; let n = step % 3; let hits = 0; let seen = 0; select n { t@ 2 => { hits <- t ~ hits + 1; seen <- t * 10 }, t@ 0 | t@ 1 => seen <- t, _ => never() }; (hits, seen) }

@@ -118,4 +118,8 @@ pub const SEEDS: &[&str] = &[
     "// schedule-v1: cap=64 events=512; in0=i64:1; in1=i64:10; in1=i64:20; in0=i64:2; in1=i64:30\n{ let v = seq in0 { let a = await(in1); let b = await(in1); (in0, a, b) }; v }",
     "// schedule-v1: cap=64 events=512; in1=i64:5; in0=i64:1; in1=i64:10; in0=i64:2; in1=i64:20\n{ let a = seq in0 { let r = await(in1); (in0, r) }; let b = seq in0 { let r = live(once(in1)); (in0, r) }; (a, b) }",
     "// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:2; in1=i64:10; in1=i64:20; in1=i64:30\n{ let n = i64:0; let v = seqq in0 { n <- n + i64:1; let r = await(in1); (in0, r) }; (v, n) }",
+    // a capture over a literal: the arm's event, alone, in an or-pattern
+    // and inside a tuple
+    "// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:2; in0=i64:3; in0=i64:2\n{ let hits = i64:0; select in0 { t@ i64:2 => hits <- t ~ hits + i64:1, _ => never() }; hits }",
+    "// schedule-v1: cap=64 events=512; in0=i64:1 in1=i64:5; in0=i64:2; in1=i64:6; in0=i64:7\n{ let p = (in0, in1); select p { (a@ i64:2, b@ i64:5) => a + b, (a@ i64:1 | a@ i64:7, b) => a * b, (a, _) => a * i64:10 } }",
 ];

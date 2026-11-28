@@ -1,0 +1,5 @@
+// A captured literal over a union is typed by the literal, so `s` is a string and `n`
+// an i64 in arms over `[i64, string, null]`, and one inside a tuple pattern tests and
+// binds its element. Pure: both engines run it fused.
+// Expected (both engines): [["go!", "small 2", "small 3", "int 3", "none null", "stay"], [8, 7, 9]].
+{ let f = |x: [i64, string, null]| -> string select x { s@ "go" => str::concat(s, "!"), n@ 1 | n@ 2 => "small [n + 1]", z@ null => "none [z]", i64 as i => "int [i]", string as s => s }; let g = |p: (i64, bool)| -> i64 select p { (a@ 7, b@ true) => select b { true => a + 1, false => 0 }, (a, _) => a }; (array::map(["go", 1, 2, 3, null, "stay"], f), array::map([(7, true), (7, false), (9, true)], g)) }

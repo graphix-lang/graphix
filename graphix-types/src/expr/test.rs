@@ -730,10 +730,12 @@ fn random_name() -> impl Strategy<Value = Name> {
 
 fn structure_pattern() -> impl Strategy<Value = StructurePattern> {
     let leaf = prop_oneof![
-        (value(), str_form()).prop_map(|(v, form)| {
-            let form = written_form(&v, form).unwrap_or_default();
-            StructurePattern::Literal(v, WrittenForm(form))
-        }),
+        (option::of(random_name()), value(), str_form()).prop_map(
+            |(all, value, form)| {
+                let form = WrittenForm(written_form(&value, form).unwrap_or_default());
+                StructurePattern::Literal { all, value, form }
+            }
+        ),
         option::of(random_name()).prop_map(|name| match name {
             None => StructurePattern::Ignore,
             Some(name) => StructurePattern::Bind(name),
@@ -2107,7 +2109,10 @@ fn check_structure_pattern(pat0: &StructurePattern, pat1: &StructurePattern) -> 
     match (pat0, pat1) {
         (StructurePattern::Bind(n0), StructurePattern::Bind(n1)) => n0 == n1,
         (StructurePattern::Ignore, StructurePattern::Ignore) => true,
-        (StructurePattern::Literal(v0, _), StructurePattern::Literal(v1, _)) => v0 == v1,
+        (
+            StructurePattern::Literal { all: a0, value: v0, form: _ },
+            StructurePattern::Literal { all: a1, value: v1, form: _ },
+        ) => a0 == a1 && v0 == v1,
         (
             StructurePattern::Slice { list: l0, all: a0, binds: p0 },
             StructurePattern::Slice { list: l1, all: a1, binds: p1 },
@@ -3250,6 +3255,25 @@ fn ts_list_closer_parses() {
         if let Some(e) = find_probe_error(s) {
             panic!("{s:?} failed: {e}");
         }
+    }
+}
+
+/// A capture over a literal, in each form a literal pattern takes.
+#[test]
+fn ts_literal_capture_parses() {
+    use tree_sitter_compat::find_probe_error;
+    const SRCS: &[&str] = &[
+        "select x { t@ 1 => t, _ => 0 }",
+        r#"select x { s@ "go" => s, r@ r"raw" => r, _ => "" }"#,
+        "select x { b@ true | b@ false => b }",
+        "select x { n@ null => n, d@ duration:1.s => d, u@ u8:3 => u, _ => x }",
+        "select x { (k@ 2, `A(j@ 3)) => k + j, _ => 0 }",
+    ];
+    for s in SRCS {
+        if let Some(e) = find_probe_error(s) {
+            panic!("{s:?} failed: {e}");
+        }
+        parse_one(s).unwrap();
     }
 }
 

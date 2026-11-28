@@ -102,7 +102,7 @@ impl<'a, F: FnMut(usize, Ornament<'a>)> Ornaments<F> {
     /// A pattern's string literals' delimiters, in order.
     fn pattern(&mut self, p: &'a StructurePattern) {
         ensure_sufficient(|| {
-            if let StructurePattern::Literal(Value::String(_), form) = p {
+            if let StructurePattern::Literal { value: Value::String(_), form, .. } = p {
                 self.push(Ornament::Delimiters(form.0))
             }
             p.for_each_sub(&mut |c| self.pattern(c))

@@ -261,6 +261,9 @@
 1	leaf-stale-mask-jul2026/03_nested_findmap_in_callback.gx
 4	leaf-stale-mask-jul2026/04_reactive_fold_destructure.gx
 1	leaf-stale-mask-jul2026/05_ref_connect_fold.gx
+4	literal-capture-nov2026/01_a_literal_capture_is_its_arms_event.gx
+1	literal-capture-nov2026/02_a_literal_capture_takes_its_member.gx
+6	literal-capture-nov2026/03_a_literal_capture_in_every_position.gx
 1	local-abstract-recursion-sep2026/00_construct_in_a_runtime_recursion.gx
 1	local-typedef-recursion-sep2026/00_recursion_under_a_local_typedef.gx
 1	map-nest-drop-jul2026/01_selfkey_map_teardown_overflow.gx

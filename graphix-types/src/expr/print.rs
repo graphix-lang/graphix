@@ -1396,7 +1396,9 @@ fn pretty_pattern_elts(
 impl PrettyDisplay for StructurePattern {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         use StructurePattern as P;
-        if let Some(all) = self.all() {
+        // a leaf prints whole, its capture with it
+        let leaf = matches!(self, P::Ignore | P::Literal { .. } | P::Bind(_));
+        if let Some(all) = self.all().filter(|_| !leaf) {
             write!(buf, "{all}@ ")?
         }
         fn pats(ps: &[StructurePattern]) -> SmallVec<[PatElt<'_>; 8]> {
@@ -1404,7 +1406,7 @@ impl PrettyDisplay for StructurePattern {
         }
         let brackets = |list: bool| if list { ("[<", ">]") } else { ("[", "]") };
         match self {
-            P::Ignore | P::Literal(..) | P::Bind(_) => writeln!(buf, "{self}"),
+            P::Ignore | P::Literal { .. } | P::Bind(_) => writeln!(buf, "{self}"),
             P::Slice { list, all: _, binds } => {
                 let (open, close) = brackets(*list);
                 pretty_pattern_elts(buf, open, &pats(binds), close)

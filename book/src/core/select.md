@@ -252,6 +252,22 @@ select p { whole@ { left, .. } => left + whole.right }
 Over a union, `v` is the member the arm matched; in an or-pattern, where every
 alternative captures the same name, it is the union of what they match.
 
+A capture stands over a literal too. The name is the literal's value, of
+the literal's type, and it fires each time the arm takes a value, which
+makes it the event a literal arm acts on:
+
+```graphix
+let n = array::iter([1, 2, 3, 2]);
+let twos = 0;
+select n {
+  t@ 2 => twos <- t ~ twos + 1,
+  _ => never()
+}
+```
+
+Over `_` or a bare name a capture would only be a second name, so it is
+refused: write the name alone.
+
 ### Slice Patterns
 
 Suppose we want to classify arrays that have at least two elements vs arrays

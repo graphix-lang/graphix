@@ -1,0 +1,6 @@
+// A capture stands over a literal wherever a literal pattern does: a variant's
+// payload, a list's head, a struct's field, an array's element, and over a float and a
+// duration literal (a duration pattern is not lowered, so its select stands apart and
+// the rest fuses).
+// Expected (both engines): [3, 5, "1x", 3, 5.0, 1.s].
+{ let v: [`A(i64), `B] = `A(3); let l = [<5, 6>]; let st = {a: 1, b: "x"}; let arr = [1, 2]; let d = duration:1.s; let x = 2.5; let pure = (select v { `A(k@ 3) => k, `A(k) => k * 100, `B => 0 }, select l { [<h@ 5, ..>] => h, _ => 0 }, select st { {a: p@ 1, b: q@ "x"} => "[p][q]", _ => "no" }, select arr { [a@ 1, b@ 2] => a + b, _ => 0 }, select x { t@ 2.5 => t * 2.0, t => t }); let dur = select d { t@ duration:1.s => t, _ => duration:0.s }; (pure.0, pure.1, pure.2, pure.3, pure.4, dur) }

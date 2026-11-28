@@ -115,7 +115,10 @@ impl Pack for StructWidth {
 #[derive(Debug)]
 pub enum StructPatternNode {
     Ignore,
-    Literal(Value),
+    Literal {
+        all: Option<BindId>,
+        value: Value,
+    },
     Bind(BindId),
     Slice {
         kind: SliceKind,
@@ -1004,10 +1007,17 @@ impl StructPatternNode {
         Ok(match self {
             Self::Ignore => Pat::Any(None),
             Self::Bind(id) => Pat::Any(Some(cell(id)?)),
-            Self::Literal(Value::Bool(b)) => {
-                Pat::Variant(None, if *b { TRUE } else { FALSE }, vec![])
+            Self::Literal { all: whole, value: Value::Bool(b) } => {
+                Pat::Variant(named(whole)?, if *b { TRUE } else { FALSE }, vec![])
             }
-            Self::Literal(v) => Pat::Lit(Type::of_literal(v)?, matches!(v, Value::Null)),
+            Self::Literal { all: whole, value } => {
+                let lit =
+                    Pat::Lit(Type::of_literal(value)?, matches!(value, Value::Null));
+                match named(whole)? {
+                    Some(whole) => Pat::Whole(whole, Box::new(lit)),
+                    None => lit,
+                }
+            }
             Self::Slice { kind: SliceKind::Tuple, all: whole, binds } => {
                 Pat::Tuple(named(whole)?, all(binds)?)
             }
@@ -1050,7 +1060,7 @@ impl StructPatternNode {
     /// gives their types.
     fn children(&self) -> SmallVec<[&Self; 8]> {
         match self {
-            Self::Ignore | Self::Literal(_) | Self::Bind(_) => SmallVec::new(),
+            Self::Ignore | Self::Literal { .. } | Self::Bind(_) => SmallVec::new(),
             Self::Or { alts: ps }
             | Self::Variant { binds: ps, .. }
             | Self::Slice { binds: ps, .. }
@@ -1101,7 +1111,7 @@ impl StructPatternNode {
             }
         };
         match self {
-            Self::Ignore | Self::Literal(_) | Self::Bind(_) => Some(SmallVec::new()),
+            Self::Ignore | Self::Literal { .. } | Self::Bind(_) => Some(SmallVec::new()),
             Self::Or { alts } => match inferred {
                 true => set_members(typ, alts.len()).map(|ts| at(&ts)),
                 false => Some(
@@ -1177,7 +1187,7 @@ impl StructPatternNode {
         let union = expand(env, typ).is_some_and(|t| matches!(t, Type::Set(_)));
         let distributes = !matches!(
             self,
-            Self::Ignore | Self::Literal(_) | Self::Bind(_) | Self::Or { .. }
+            Self::Ignore | Self::Literal { .. } | Self::Bind(_) | Self::Or { .. }
         );
         if !(union && distributes) {
             let ts = self.child_types(env, typ, inferred);
@@ -1225,8 +1235,9 @@ impl StructPatternNode {
     /// The `name@` capture of the whole value this pattern tests.
     fn capture(&self) -> Option<BindId> {
         match self {
-            Self::Ignore | Self::Literal(_) | Self::Bind(_) | Self::Or { .. } => None,
-            Self::SlicePrefix { all, .. }
+            Self::Ignore | Self::Bind(_) | Self::Or { .. } => None,
+            Self::Literal { all, .. }
+            | Self::SlicePrefix { all, .. }
             | Self::SliceSuffix { all, .. }
             | Self::Slice { all, .. }
             | Self::Struct { all, .. }
@@ -1360,8 +1371,8 @@ impl StructPatternNode {
             let sub = self.children_inferred(inferred);
             match self {
                 Self::Ignore | Self::Bind(_) => Some(Type::Any),
-                Self::Literal(v) => {
-                    Some(Type::of_literal(v).unwrap_or_else(|_| typ.clone()))
+                Self::Literal { value, .. } => {
+                    Some(Type::of_literal(value).unwrap_or_else(|_| typ.clone()))
                 }
                 Self::Slice { kind: SliceKind::Array | SliceKind::List, .. }
                 | Self::SlicePrefix { .. }
@@ -1591,7 +1602,7 @@ impl StructPatternNode {
         f: &mut dyn FnMut(&mut Self, &Type) -> Result<()>,
     ) -> Result<()> {
         match self {
-            Self::Ignore | Self::Literal(_) | Self::Bind(_) | Self::Struct { .. } => {
+            Self::Ignore | Self::Literal { .. } | Self::Bind(_) | Self::Struct { .. } => {
                 Ok(())
             }
             Self::Or { alts: ps }
@@ -1947,9 +1958,11 @@ impl StructPatternNode {
                 Self::Or { alts: compiled }
             }
             StructurePattern::Ignore => Self::Ignore,
-            StructurePattern::Literal(v, _) => {
-                type_predicate.check_contains(&ctx.env, &Type::of_literal(v)?)?;
-                Self::Literal(v.clone())
+            StructurePattern::Literal { all, value, form: _ } => {
+                let typ = Type::of_literal(value)?;
+                type_predicate.check_contains(&ctx.env, &typ)?;
+                let all = bind_all(ctx, cx, all, &typ, &mut mode)?;
+                Self::Literal { all, value: value.clone() }
             }
             StructurePattern::Bind(name) => {
                 Self::Bind(leaf_bind(ctx, cx, name, &written, &mut mode)?)
@@ -2244,8 +2257,8 @@ impl StructPatternNode {
                     bind.bind(&g.payload, f)
                 }
             }
-            Self::Ignore | Self::Literal(_) => (),
-            Self::Bind(id) => f(*id, v.clone()),
+            Self::Ignore | Self::Literal { all: None, .. } => (),
+            Self::Bind(id) | Self::Literal { all: Some(id), .. } => f(*id, v.clone()),
             // the first matching alternative delivers the shared ids
             Self::Or { alts } => {
                 for a in alts.iter() {
@@ -2367,7 +2380,7 @@ impl StructPatternNode {
             },
             Self::Ignore | Self::Bind(_) => true,
             Self::Or { alts } => alts.iter().any(|a| a.is_match(v)),
-            Self::Literal(o) => v == o,
+            Self::Literal { value, .. } => v == value,
             Self::Slice {
                 kind: kind @ (SliceKind::Tuple | SliceKind::Array),
                 all: _,
@@ -2455,8 +2468,8 @@ impl StructPatternNode {
         };
         crate::stack::ensure_sufficient(|| match self {
             Self::Bind(_) | Self::Ignore => Some(typ.clone()),
-            Self::Literal(Value::Null) => literal(Typ::Null),
-            Self::Literal(Value::Bool(_)) if heads => literal(Typ::Bool),
+            Self::Literal { value: Value::Null, .. } => literal(Typ::Null),
+            Self::Literal { value: Value::Bool(_), .. } if heads => literal(Typ::Bool),
             Self::Or { alts } if heads => union_of(
                 alts.iter().map(|a| a.part(env, typ, heads)).collect::<Option<_>>()?,
             ),
@@ -2564,7 +2577,7 @@ impl StructPatternNode {
         };
         let shaped = match (self, &shape) {
             (
-                Self::Literal(_)
+                Self::Literal { .. }
                 | Self::Slice { kind: SliceKind::Array | SliceKind::List, .. }
                 | Self::SlicePrefix { .. }
                 | Self::SliceSuffix { .. },
@@ -2685,7 +2698,7 @@ impl StructPatternNode {
             Self::Bind(_) | Self::Ignore => true,
             // an alternative matches anything of its own member only
             Self::Or { .. }
-            | Self::Literal(_)
+            | Self::Literal { .. }
             | Self::Variant { .. }
             | Self::Abstract { .. } => false,
             Self::Slice { kind: SliceKind::Tuple, all: _, binds } => {
@@ -3130,7 +3143,7 @@ impl StructPatternNode {
     fn encoded_len_inner(&self) -> usize {
         1 + match self {
             Self::Ignore => 0,
-            Self::Literal(v) => v.encoded_len(),
+            Self::Literal { all, value } => all.encoded_len() + value.encoded_len(),
             Self::Bind(id) => id.encoded_len(),
             Self::Slice { kind, all, binds } => {
                 kind.encoded_len() + all.encoded_len() + boxed_len(binds)
@@ -3172,9 +3185,10 @@ impl StructPatternNode {
     fn encode_inner(&self, buf: &mut impl bytes::BufMut) -> Result<(), PackError> {
         match self {
             Self::Ignore => buf.put_u8(0),
-            Self::Literal(v) => {
+            Self::Literal { all, value } => {
                 buf.put_u8(1);
-                v.encode(buf)?
+                all.encode(buf)?;
+                value.encode(buf)?
             }
             Self::Bind(id) => {
                 buf.put_u8(2);
@@ -3238,7 +3252,7 @@ impl StructPatternNode {
         }
         Ok(match buf.get_u8() {
             0 => Self::Ignore,
-            1 => Self::Literal(Pack::decode(buf)?),
+            1 => Self::Literal { all: Pack::decode(buf)?, value: Pack::decode(buf)? },
             2 => Self::Bind(Pack::decode(buf)?),
             3 => Self::Slice {
                 kind: Pack::decode(buf)?,

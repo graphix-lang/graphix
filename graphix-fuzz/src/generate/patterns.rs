@@ -75,7 +75,17 @@ fn gen_pattern(
                         return Pat { text: format!("{a} | {b}"), refutable: true };
                     }
                 }
-                Pat { text: types::literal(rng, ty), refutable: true }
+                let lit = types::literal(rng, ty);
+                // sometimes captured: the name is the literal's value
+                let text = match rng.below(4) {
+                    0 => {
+                        let n = bind_name(inner, rng, mark);
+                        inner.push(n.clone(), ty.clone());
+                        format!("{n}@ {lit}")
+                    }
+                    _ => lit,
+                };
+                Pat { text, refutable: true }
             } else {
                 leaf(inner, rng)
             }
