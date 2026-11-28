@@ -524,8 +524,10 @@ impl<'a> Seen<'a> {
 /// fusable subset, or `None` if any part has no kernel encoding.
 /// Accept/reject matches [`abi_kind`] at each level. Every part the
 /// kernel reads structurally is TVar-free; a `Map`, an `Error` and an
-/// option/result's non-success member are kept as found (they cross
-/// as an opaque `Value`), so a TVar may survive inside them.
+/// option/result's non-success member cross as an opaque `Value` and are
+/// kept unread, each bound cell replaced by its binding. A frozen type
+/// holds no cell of the epoch that made it: a kernel's signature outlives
+/// that epoch in the caches that hand it to a later bind.
 ///
 /// A recursive named type freezes to an opaque leaf: the recurring
 /// `Ref` stays unexpanded, so the output is finite and the value
@@ -761,8 +763,7 @@ impl Freeze {
             let resolved = resolved.as_ref().ok_or(Unsupported)?;
             match resolved {
                 Type::Bottom => Ok(Type::Bottom),
-                Type::Map { .. } => Ok(resolved.clone()),
-                Type::Error(_) => Ok(resolved.clone()),
+                Type::Map { .. } | Type::Error(_) => Ok(resolved.resolve_tvars()),
                 Type::Primitive(p) => {
                     // A primitive with no register form (a varint, a decimal,
                     // an error) and a union of several are one two-word Value.
@@ -808,17 +809,12 @@ impl Freeze {
                         return self.freeze(&p);
                     }
                     if let Some(succ) = option_result_success(members) {
-                        let succ_idx =
-                            if std::ptr::eq(&members[0], succ) { 0 } else { 1 };
                         let frozen_succ = self.freeze(succ)?;
-                        let m0 = if succ_idx == 0 {
-                            frozen_succ.clone()
-                        } else {
-                            members[0].clone()
+                        let both = match std::ptr::eq(&members[0], succ) {
+                            true => [frozen_succ, members[1].resolve_tvars()],
+                            false => [members[0].resolve_tvars(), frozen_succ],
                         };
-                        let m1 =
-                            if succ_idx == 1 { frozen_succ } else { members[1].clone() };
-                        return Ok(Type::Set(Arc::from_iter([m0, m1])));
+                        return Ok(Type::Set(Arc::from_iter(both)));
                     }
                     let variant =
                         |m: &Type| m.with_deref(|r| matches!(r, Some(Type::Variant(..))));

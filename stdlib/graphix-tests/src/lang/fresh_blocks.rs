@@ -110,6 +110,18 @@ run!(
     prints("[i64:0, i64:1, i64:0, i64:1, i64:0, i64:1]")
 );
 
+// A later start takes the kernels the first one built, and a map crosses
+// into a kernel unread, its type kept as written.
+run!(
+    a_later_start_takes_the_kernels_of_the_first,
+    clocked!(
+        "let v = fresh k { let n = 0; \
+         on k { n <- n + map::fold({\"a\" => 1, \"b\" => 2}, 0, |acc, (_, x)| acc + x) }; n }; \
+         array::group(v, |i, _| i == 6)"
+    ),
+    prints("[i64:0, i64:3, i64:0, i64:3, i64:0, i64:3]")
+);
+
 // A fresh block in an on block is its own: the outer block samples
 // nothing in it, and its body runs live.
 run!(

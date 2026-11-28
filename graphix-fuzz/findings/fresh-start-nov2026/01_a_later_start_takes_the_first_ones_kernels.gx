@@ -1,0 +1,10 @@
+// A fresh block's later start builds its body again and takes the kernels its
+// first start built (design/fresh_blocks.md; fusion::share). A kernel's signature
+// outlives the bind that made it, so the freeze keeps no type cell of that bind: a
+// map crosses into a kernel unread, and its type was kept as found, cells and all.
+// The second start then compared signatures through cells the first start's end had
+// dropped and the process aborted ("a cell is read after its epoch's arena was
+// dropped").
+// Expected (both engines): each start prints 1, then -10099 once its on block ran.
+// schedule-v1: cap=96 events=768; in1=bool:false; in1=bool:true; in1=bool:false
+{ let v3 = fresh let v4 = in1 { let v1 = 0; on in1 { v1 <- v1 + ((map::fold({"b" => "a"}, 100, |acc, (k, v)| acc) * (-1 - 100))) }; v1 + count(in1) }; println("[v3]"); v3 }
